@@ -72,12 +72,15 @@ README wording-only changes usually do not need a new release.
 
 ## Release Checklist
 
-1. Merge the intended release commit to `main`.
-2. Run tests and vulnerability checks.
-3. Build and push the multi-arch Quay image for the exact version tag.
-4. Verify the image with `docker buildx imagetools inspect`.
-5. Verify the raw CRD URL returns HTTP 200.
-6. Create a GitHub pre-release for the tag.
+1. Open a release PR and pass the repository ruleset requirements.
+2. Merge the release PR to `main`.
+3. From the merged `main` commit, run tests and vulnerability checks.
+4. Create and push the release Git tag for that exact commit.
+5. Build and push the multi-arch Quay image from the tagged commit.
+6. Verify the image with `docker buildx imagetools inspect`.
+7. Verify the raw CRD URL for the tag returns HTTP 200.
+8. Create a GitHub pre-release for the tag, including the image tag/digest and
+   raw CRD URL.
 
 ## Security
 
