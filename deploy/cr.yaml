@@ -1,0 +1,110 @@
+apiVersion: pgbouncer-aurora.io/v1alpha1
+kind: PgBouncerAurora
+metadata:
+  name: example-pg
+spec:
+  discovery:
+    clusterName: example-pg
+    domainName: xxxx.ap-northeast-2.rds.amazonaws.com
+    port: 5432
+    database: postgres
+    authSecretRef:
+      name: pgbouncer-operator-db-auth
+    interval: 3s
+    metadataRefreshInterval: 1m
+    timeout: 3s
+    failureThreshold: 3
+
+  monitor:
+    interval: 10s
+    timeout: 3s
+    failureThreshold: 3
+    recoveryThreshold: 2
+    maxConcurrency: 4
+    directDBProbe: true
+    pgbouncerPathProbe: true
+    directDBSSLMode: require
+
+  pgbouncer:
+    image: db/pgbouncer:1.25.2
+    replicas: 1
+    config:
+      pgbouncer:
+        auth_file: /etc/pgbouncer/userlist.txt
+        listen_addr: 0.0.0.0
+        pidfile: /tmp/pgbouncer.pid
+        listen_port: "6432"
+        pool_mode: transaction
+        max_client_conn: "8000"
+        default_pool_size: "300"
+        server_idle_timeout: "3600"
+        server_lifetime: "3600"
+        dns_max_ttl: "15"
+      databases:
+        "*":
+          user: svc
+      users: {}
+      peers: {}
+    instanceOverrides:
+      - name: example-pg-instance-1
+        replicas: 2
+        config:
+          pgbouncer:
+            default_pool_size: "100"
+          databases:
+            "*":
+              pool_size: "100"
+    authFileSecretRef:
+      name: pgbouncer-userlist
+    labels: {}
+    annotations: {}
+    resources: {}
+    serviceAccountName: ""
+    nodeSelector: {}
+    affinity: {}
+    tolerations: []
+    priorityClassName: ""
+    runtimeClassName: ""
+    podSecurityContext:
+      seccompProfile:
+        type: RuntimeDefault
+    containerSecurityContext:
+      allowPrivilegeEscalation: false
+      readOnlyRootFilesystem: true
+      capabilities:
+        drop: ["ALL"]
+    livenessProbe: {}
+    readinessProbe: {}
+    sidecars: []
+    volumes:
+      - name: tmp
+        emptyDir: {}
+    volumeMounts:
+      - name: tmp
+        mountPath: /tmp
+    imagePullSecrets: []
+    topologySpreadConstraints: []
+
+  services:
+    writer:
+      name: writer
+      enabled: true
+      type: ClusterIP
+    reader:
+      name: reader
+      enabled: true
+      type: ClusterIP
+    perInstances:
+      type: ClusterIP
+      
+  topologyPolicy:
+    removeAfterMissingCount: 3
+    removedInstanceRetention: 1h
+    writerChangeConnectionHandling: KeepExisting
+    readerEmptyFallback:
+      enabled: true
+    zoneAware:
+      enabled: true
+      enforcement: Preferred
+      topologyKey: topology.kubernetes.io/zone
+      conflictPolicy: Warn

@@ -1,0 +1,9 @@
+.git
+.DS_Store
+charts
+example
+bin
+dist
+tmp
+*.test
+coverage.out

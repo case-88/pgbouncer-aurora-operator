@@ -1,0 +1,396 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: pgbouncerauroras.pgbouncer-aurora.io
+spec:
+  group: pgbouncer-aurora.io
+  names:
+    kind: PgBouncerAurora
+    listKind: PgBouncerAuroraList
+    plural: pgbouncerauroras
+    singular: pgbounceraurora
+    shortNames:
+      - pgba
+  scope: Namespaced
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      subresources:
+        status: {}
+      additionalPrinterColumns:
+        - name: Writer
+          type: integer
+          jsonPath: .status.serviceSummary.writer.members
+        - name: Reader
+          type: integer
+          jsonPath: .status.serviceSummary.reader.members
+        - name: Age
+          type: date
+          jsonPath: .metadata.creationTimestamp
+      schema:
+        openAPIV3Schema:
+          type: object
+          required:
+            - spec
+          properties:
+            apiVersion:
+              type: string
+            kind:
+              type: string
+            metadata:
+              type: object
+            spec:
+              type: object
+              required:
+                - discovery
+                - pgbouncer
+              properties:
+                discovery:
+                  type: object
+                  required:
+                    - authSecretRef
+                    - clusterName
+                    - domainName
+                  properties:
+                    clusterName:
+                      type: string
+                      minLength: 1
+                    domainName:
+                      type: string
+                      minLength: 1
+                    port:
+                      type: integer
+                      format: int32
+                      minimum: 1
+                      maximum: 65535
+                    clusterEndpoints:
+                      type: object
+                      properties:
+                        writer:
+                          type: object
+                          properties:
+                            host:
+                              type: string
+                              minLength: 1
+                            port:
+                              type: integer
+                              format: int32
+                              minimum: 1
+                              maximum: 65535
+                        reader:
+                          type: object
+                          properties:
+                            host:
+                              type: string
+                              minLength: 1
+                            port:
+                              type: integer
+                              format: int32
+                              minimum: 1
+                              maximum: 65535
+                    database:
+                      type: string
+                      default: postgres
+                    authSecretRef:
+                      type: object
+                      required:
+                        - name
+                      properties:
+                        name:
+                          type: string
+                          minLength: 1
+                    interval:
+                      type: string
+                      default: 3s
+                    metadataRefreshInterval:
+                      type: string
+                      default: 1m
+                    timeout:
+                      type: string
+                      default: 3s
+                    failureThreshold:
+                      type: integer
+                      format: int32
+                      minimum: 1
+                      default: 3
+                monitor:
+                  type: object
+                  default: {}
+                  properties:
+                    interval:
+                      type: string
+                      default: 10s
+                    timeout:
+                      type: string
+                      default: 3s
+                    failureThreshold:
+                      type: integer
+                      format: int32
+                      minimum: 1
+                      default: 3
+                    recoveryThreshold:
+                      type: integer
+                      format: int32
+                      minimum: 1
+                      default: 2
+                    maxConcurrency:
+                      type: integer
+                      format: int32
+                      minimum: 1
+                      default: 4
+                    directDBProbe:
+                      type: boolean
+                      default: true
+                    pgbouncerPathProbe:
+                      type: boolean
+                      default: true
+                    directDBSSLMode:
+                      type: string
+                pgbouncer:
+                  type: object
+                  required:
+                    - image
+                    - authFileSecretRef
+                  properties:
+                    image:
+                      type: string
+                      minLength: 1
+                    replicas:
+                      type: integer
+                      format: int32
+                      minimum: 1
+                      default: 1
+                    config:
+                      type: object
+                      default: {}
+                      properties:
+                        pgbouncer:
+                          type: object
+                          additionalProperties:
+                            type: string
+                        databases:
+                          type: object
+                          additionalProperties:
+                            type: object
+                            additionalProperties:
+                              type: string
+                        users:
+                          type: object
+                          additionalProperties:
+                            type: object
+                            additionalProperties:
+                              type: string
+                        peers:
+                          type: object
+                          additionalProperties:
+                            type: object
+                            additionalProperties:
+                              type: string
+                    instanceOverrides:
+                      type: array
+                      items:
+                        type: object
+                        required:
+                          - name
+                        properties:
+                          name:
+                            type: string
+                            minLength: 1
+                          replicas:
+                            type: integer
+                            format: int32
+                            minimum: 1
+                          config:
+                            type: object
+                            properties:
+                              pgbouncer:
+                                type: object
+                                additionalProperties:
+                                  type: string
+                              databases:
+                                type: object
+                                additionalProperties:
+                                  type: object
+                                  additionalProperties:
+                                    type: string
+                              users:
+                                type: object
+                                additionalProperties:
+                                  type: object
+                                  additionalProperties:
+                                    type: string
+                              peers:
+                                type: object
+                                additionalProperties:
+                                  type: object
+                                  additionalProperties:
+                                    type: string
+                    authFileSecretRef:
+                      type: object
+                      required:
+                        - name
+                      properties:
+                        name:
+                          type: string
+                          minLength: 1
+                    labels:
+                      type: object
+                      additionalProperties:
+                        type: string
+                    annotations:
+                      type: object
+                      additionalProperties:
+                        type: string
+                    resources:
+                      type: object
+                      x-kubernetes-preserve-unknown-fields: true
+                    serviceAccountName:
+                      type: string
+                    nodeSelector:
+                      type: object
+                      additionalProperties:
+                        type: string
+                    affinity:
+                      type: object
+                      x-kubernetes-preserve-unknown-fields: true
+                    tolerations:
+                      type: array
+                      items:
+                        type: object
+                        x-kubernetes-preserve-unknown-fields: true
+                    priorityClassName:
+                      type: string
+                    runtimeClassName:
+                      type: string
+                    podSecurityContext:
+                      type: object
+                      x-kubernetes-preserve-unknown-fields: true
+                    containerSecurityContext:
+                      type: object
+                      x-kubernetes-preserve-unknown-fields: true
+                    livenessProbe:
+                      type: object
+                      x-kubernetes-preserve-unknown-fields: true
+                    readinessProbe:
+                      type: object
+                      x-kubernetes-preserve-unknown-fields: true
+                    sidecars:
+                      type: array
+                      items:
+                        type: object
+                        x-kubernetes-preserve-unknown-fields: true
+                    volumes:
+                      type: array
+                      items:
+                        type: object
+                        x-kubernetes-preserve-unknown-fields: true
+                    volumeMounts:
+                      type: array
+                      items:
+                        type: object
+                        x-kubernetes-preserve-unknown-fields: true
+                    imagePullSecrets:
+                      type: array
+                      items:
+                        type: object
+                        required:
+                          - name
+                        properties:
+                          name:
+                            type: string
+                    topologySpreadConstraints:
+                      type: array
+                      items:
+                        type: object
+                        x-kubernetes-preserve-unknown-fields: true
+                services:
+                  type: object
+                  default: {}
+                  properties:
+                    writer:
+                      type: object
+                      default: {}
+                      properties:
+                        name:
+                          type: string
+                          default: writer
+                        type:
+                          type: string
+                          enum: [ClusterIP, NodePort, LoadBalancer]
+                          default: ClusterIP
+                        annotations:
+                          type: object
+                          additionalProperties:
+                            type: string
+                    reader:
+                      type: object
+                      default: {}
+                      properties:
+                        name:
+                          type: string
+                          default: reader
+                        type:
+                          type: string
+                          enum: [ClusterIP, NodePort, LoadBalancer]
+                          default: ClusterIP
+                        annotations:
+                          type: object
+                          additionalProperties:
+                            type: string
+                    perInstances:
+                      type: object
+                      default: {}
+                      properties:
+                        type:
+                          type: string
+                          enum: [ClusterIP, NodePort, LoadBalancer]
+                          default: ClusterIP
+                        annotations:
+                          type: object
+                          additionalProperties:
+                            type: string
+                topologyPolicy:
+                  type: object
+                  default: {}
+                  properties:
+                    removeAfterMissingCount:
+                      type: integer
+                      format: int32
+                      minimum: 1
+                      default: 3
+                    removedInstanceRetention:
+                      type: string
+                      default: 1h
+                    writerChangeConnectionHandling:
+                      type: string
+                      enum: [KeepExisting, RestartWriters, RestartAll]
+                      default: KeepExisting
+                    readerEmptyFallback:
+                      type: object
+                      default: {}
+                      properties:
+                        enabled:
+                          type: boolean
+                          default: true
+                    zoneAware:
+                      type: object
+                      default: {}
+                      properties:
+                        enabled:
+                          type: boolean
+                          default: true
+                        enforcement:
+                          type: string
+                          enum: [Preferred, Required]
+                          default: Preferred
+                        topologyKey:
+                          type: string
+                          default: topology.kubernetes.io/zone
+                        conflictPolicy:
+                          type: string
+                          enum: [Warn, Fail, Ignore]
+                          default: Warn
+            status:
+              type: object
+              x-kubernetes-preserve-unknown-fields: true
