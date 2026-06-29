@@ -565,13 +565,13 @@ annotations:
   service.beta.kubernetes.io/aws-load-balancer-attributes: load_balancing.cross_zone.enabled=true
 ```
 
-In production, measure at least the following three paths separately. The internal reference values below are min~max fresh/new-connection recovery times from 20 failover runs; reader values use runs 1~17 only:
+In production, measure at least the following three paths separately. The internal reference values below are min\~max fresh recovery times from 20 failover runs; reader values use runs 1\~17 only:
 
 | Path | What it tells you | Internal reference |
 |---|---|---|
-| Aurora direct | Baseline Aurora endpoint behavior. | Writer 24~59s / Reader 0~65s |
-| Kubernetes Service | In-cluster operator/EndpointSlice convergence. | Writer 16~40s / Reader 0~6s |
-| NLB | External LoadBalancer propagation and target health behavior. | Writer 25~69s / Reader 0~4s |
+| Aurora direct | Baseline Aurora endpoint behavior. | Writer 24\~59s / Reader 0\~65s |
+| Kubernetes Service | In-cluster operator/EndpointSlice convergence. | Writer 16\~40s / Reader 0\~6s |
+| NLB | External LoadBalancer propagation and target health behavior. | Writer 25\~69s / Reader 0\~4s |
 
 Fresh-connection tests alone are not enough for application-perspective recovery. Applications using long-lived pools must be tested with an app-like reconnection flow: an existing connection fails or returns the wrong role → the pool discards it → a new connection is established → a query succeeds on the expected writer/reader role.
 
@@ -584,8 +584,8 @@ Beyond failover, common operational topology-change cases were measured.
 | Case | Expected behavior | Observed result | Response time |
 |---|---|---|---|
 | Writer deletion + failover | Remove the old writer from the Service and switch to the new writer | The writer Service switches to the new writer, and the instance being deleted is also excluded from the reader Service | Topology event handling and Service membership apply are roughly 100–200ms. Fresh-query recovery is also affected by DB failover/backend reconnect |
-| Reader addition | Prepare the new reader resource, but do not put it into the reader Service until monitor/readiness passes | While two readers are added consecutively, they are not put in immediately but added to the reader Service in ready order | New reader discovery follows the `aurora_replica_status()` discovery cycle. Added sequentially after readiness, apply ~100–200ms |
-| Reader deletion | Exclude the deleted reader from the reader Service, and clean up per-instance resources per the retention policy | Excluded from the reader Service immediately once the discovery/missing-count policy is reflected | Excluded right after deletion detection, apply ~80ms |
+| Reader addition | Prepare the new reader resource, but do not put it into the reader Service until monitor/readiness passes | While two readers are added consecutively, they are not put in immediately but added to the reader Service in ready order | New reader discovery follows the `aurora_replica_status()` discovery cycle. Added sequentially after readiness, apply \~100–200ms |
+| Reader deletion | Exclude the deleted reader from the reader Service, and clean up per-instance resources per the retention policy | Excluded from the reader Service immediately once the discovery/missing-count policy is reflected | Excluded right after deletion detection, apply \~80ms |
 | All readers removed | Temporarily join the writer via `readerEmptyFallback` so the reader Service is not empty | Once usable readers reach 0, the reader Service is temporarily corrected to the writer instance | While reader candidates are 0, the reader Service is not emptied and points at the fallback writer. Once a real reader is ready, the fallback writer is removed |
 
 In these measurements too, the topology source of truth is `aurora_replica_status()`, and RDS metadata is an optional layer that enriches AZ/`DbiResourceId` only when zoneAware is on. A metadata refresh failure does not make discovery untrusted, and ordinary add/remove proceeds via the discovery/monitor policy.
