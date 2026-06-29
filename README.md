@@ -12,7 +12,9 @@ A typical "PgBouncer in front of Aurora" setup has two limitations.
 
 2. **Topology changes are not reflected automatically.** Static config or a single cluster endpoint cannot follow instances that change through scale-out, replacement, or promotion. To use a newly added Aurora instance, you have to define the corresponding PgBouncer deployment by hand each time.
 
-This operator watches Aurora topology, updates per-instance writer/reader Kubernetes Service membership through operator-managed Pod labels, and connects each PgBouncer directly to a single Aurora instance (1:1). This fills both gaps — per-instance PgBouncer Pods spread reader load instead of concentrating it on one endpoint, and new instances are automatically joined to the Service of their role.
+3. **The Aurora cluster endpoint is strongly affected by DNS cache, TTL, and refresh behavior.** After failover, even if the cluster endpoint points at the new writer, stale endpoint/IP data can remain in use longer depending on DNS settings.
+
+This operator watches Aurora topology, updates per-instance writer/reader Kubernetes Service membership through operator-managed Pod labels, and connects each PgBouncer directly to a single Aurora instance (1:1). This fills these gaps — per-instance PgBouncer Pods spread reader load instead of concentrating it on one endpoint, and new instances are automatically joined to the Service of their role.
 
 ## What it does
 
@@ -51,7 +53,7 @@ flowchart LR
 - **Automatic Aurora topology sync** — detects instance add/remove and writer failover, and reflects them into writer/reader Service membership.
 - **Per-instance 1:1 PgBouncer** — resolves reader connection skew.
 - **Fast writer failover detection** — once trusted Discovery confirms the new writer and its PgBouncer Pod is Ready, the writer Service membership is switched first without waiting for the next Monitor success (fast path).
-- **zoneAware placement** — places each PgBouncer Pod on a node in the same AZ as its Aurora instance, preferred or required.
+- **Zone-aware placement** — places each PgBouncer Pod on a node in the same AZ as its Aurora instance, preferred or required.
 - **Safety mechanisms** — last-known-good retention and freeze keep the last verified healthy traffic state when observations are uncertain.
 - **Built-in status dashboard** — the operator serves a `/status` web UI and `/status.json` that show managed CRs, topology, writer/reader membership, and conditions at a glance ([Status dashboard](#status-dashboard-status)).
 
@@ -324,7 +326,7 @@ The operator does not infer the AWS region from `spec.discovery.domainName`. RDS
 
 The two probes work as follows. If both are turned off (`false`), the backend is treated as unhealthy with the reason `no monitor probes enabled`.
 
-- **direct DB probe** — connects directly to the Aurora instance to check health/role. The connection DB is `spec.discovery.database` (default `postgres`), and the SSL mode follows the discovery Secret's `sslmode`.
+- **Direct DB probe** — connects directly to the Aurora instance to check health/role. The connection DB is `spec.discovery.database` (default `postgres`), and the SSL mode follows the discovery Secret's `sslmode`.
 - **PgBouncer path probe** — checks that it can reach the backend through PgBouncer.
   - The operator automatically injects a dedicated alias `pgbouncer_aurora_probe` into `[databases]`, and the probe connects via this alias. It is not affected by the user-defined `[databases]` `*`, other DB aliases, or `user` settings.
   - This alias is injected only when `pgbouncerPathProbe` is enabled, and it actually connects to `spec.discovery.database` (default `postgres`).
@@ -453,7 +455,7 @@ These are manager process flags, not CR options.
 | Flag | Default | Unit | Description |
 |---|---|---|---|
 | `--metrics-bind-address` | `:8080` | address | Metrics bind address. |
-| `--health-probe-bind-address` | `:8081` | address | health/readiness probe bind address. |
+| `--health-probe-bind-address` | `:8081` | address | Health/readiness probe bind address. |
 | `--leader-elect` | `false` | boolean | Enable controller-runtime leader election. The default manifest passes this flag. |
 | `--aws-region` | `""` | AWS region | Single AWS region for RDS metadata lookups. Must match the Aurora region the managed CRs use. The default manifest sets `ap-northeast-2`. |
 | `--watch-namespace` | `WATCH_NAMESPACE` | namespace | Namespace the manager watches. Required. Cluster-wide watch is not supported. The default manifest uses the operator Pod namespace. |
@@ -527,7 +529,7 @@ What it shows:
 If an Aurora instance and the PgBouncer Pod that serves it are in different AZs, you incur cross-AZ latency and data transfer cost. Zone-aware placement reduces this by putting each PgBouncer Pod on a node in the same AZ as its Aurora instance. It is enabled by default and controlled by `spec.topologyPolicy.zoneAware`.
 
 - **AZ source** — `aurora_replica_status()` has no AZ, so only when zone-aware is on does the operator enrich each instance's AZ via RDS `DescribeDBClusters`/`DescribeDBInstances`. This metadata is only a placement hint, not the topology source of truth, and a lookup failure does not block instance add/remove itself.
-- **enforcement** — `Preferred` (default) generates `preferredDuringSchedulingIgnoredDuringExecution` nodeAffinity, while `Required` generates `requiredDuringSchedulingIgnoredDuringExecution` nodeAffinity. The default is Preferred so that the Pod still schedules and avoids a DB-connection outage even when no same-AZ node exists. Use `Required` when strongly steering node creation in a specific AZ via Karpenter or similar, but be aware the Pod may stay Pending if the NodePool/subnet/AZ constraints do not align.
+- **Enforcement** — `Preferred` (default) generates `preferredDuringSchedulingIgnoredDuringExecution` nodeAffinity, while `Required` generates `requiredDuringSchedulingIgnoredDuringExecution` nodeAffinity. The default is Preferred so that the Pod still schedules and avoids a DB-connection outage even when no same-AZ node exists. Use `Required` when strongly steering node creation in a specific AZ via Karpenter or similar, but be aware the Pod may stay Pending if the NodePool/subnet/AZ constraints do not align.
 - **Relationship with user scheduling constraints** — zone-aware is additive to existing settings and does not replace user-specified `nodeSelector`, `affinity`, or `topologySpreadConstraints`. The operator detects common cases that may conflict with the zone-aware intent — a strict `nodeSelector`, a required `nodeAffinity`, or zone pinning + topology spread on the same key — and handles them per `conflictPolicy` (`Warn`/`Fail`/`Ignore`). It cannot prove every scheduler outcome, so also monitor the Kubernetes scheduling state.
 - **Replica spreading** — to spread the PgBouncer replicas of the same Aurora instance across nodes, use the native `spec.pgbouncer.topologySpreadConstraints` (there is no operator-specific `replicaSpread` option). The roles are split: zone nodeAffinity handles AZ alignment, and topologySpreadConstraints handles replica spreading.
 
@@ -548,7 +550,7 @@ Aurora writer/reader role change
 
 > These numbers are the **convergence speed** of Service membership, not a zero-downtime guarantee for already-established connections or in-flight transactions. Connection/transaction recovery is the application responsibility described in the [Scope and configuration](#scope-and-configuration-must-read) section above.
 
-In testing, the operator-managed Kubernetes Service generally converged faster, on a fresh-connection basis, than waiting directly on the Aurora cluster endpoint, while an NLB-backed Service added target propagation time. This is expected — the internal Service path is updated via Kubernetes EndpointSlice, whereas an external NLB also depends on target health-check and deregistration behavior.
+In testing, the operator-managed Kubernetes Service generally converged faster, on a fresh-connection basis (each measurement opens a new connection instead of reusing an existing pooled connection), than waiting directly on the Aurora cluster endpoint, while an NLB-backed Service added target propagation time. This is expected — the internal Service path is updated via Kubernetes EndpointSlice, whereas an external NLB also depends on target health-check and deregistration behavior.
 
 For the NLB-backed measurements, the writer/reader Services were tuned with annotations that minimize NLB target deregistration and propagation latency — a short deregistration delay with connection termination on deregister, plus cross-zone balancing:
 
@@ -563,15 +565,17 @@ annotations:
   service.beta.kubernetes.io/aws-load-balancer-attributes: load_balancing.cross_zone.enabled=true
 ```
 
-In production, measure at least the following three paths separately:
+In production, measure at least the following three paths separately. The internal reference values below are min~max fresh/new-connection recovery times from 20 failover runs; reader values use runs 1~17 only:
 
-| Path | What it tells you |
-|---|---|
-| Aurora direct | Baseline Aurora endpoint behavior. |
-| Kubernetes Service | In-cluster operator/EndpointSlice convergence. |
-| NLB | External LoadBalancer propagation and target health behavior. |
+| Path | What it tells you | Internal reference |
+|---|---|---|
+| Aurora direct | Baseline Aurora endpoint behavior. | Writer 24~59s / Reader 0~65s |
+| Kubernetes Service | In-cluster operator/EndpointSlice convergence. | Writer 16~40s / Reader 0~6s |
+| NLB | External LoadBalancer propagation and target health behavior. | Writer 25~69s / Reader 0~4s |
 
-Fresh connections alone are not enough for application-perspective recovery. Applications using long-lived pools must be tested with an app-like reconnection flow: an existing connection fails or returns the wrong role → the pool discards it → a new connection is established → a query succeeds on the expected writer/reader role.
+Fresh-connection tests alone are not enough for application-perspective recovery. Applications using long-lived pools must be tested with an app-like reconnection flow: an existing connection fails or returns the wrong role → the pool discards it → a new connection is established → a query succeeds on the expected writer/reader role.
+
+In the persistent-connection test, recovery stayed close to fresh-connection behavior when fast timeouts, reconnects, and role check (`targetServerType`) were configured. The important part is that the pool fails fast, detects stale or wrong-role connections, discards them, and opens new ones.
 
 ### Topology change cases
 
@@ -641,6 +645,8 @@ kubectl -n pgbouncer-aurora set image deploy/pgbouncer-aurora-operator \
 ```
 
 ## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for contribution, versioning, and release policies.
 
 Contributions are welcome. The process is intentionally simple for now:
 
