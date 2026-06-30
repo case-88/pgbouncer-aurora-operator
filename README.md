@@ -121,6 +121,7 @@ So the application must configure connection lifetime, connection validation, an
 |---|---|
 | Connection validation / keepalive | Prefer the validation, keepalive, or ping features built into your driver/pool framework. If you split Writer/Reader connections, also consider role checks such as `targetServerType`. |
 | Periodic idle connection check | Periodically validate idle pooled connections so connections already closed by the DB server or network are detected and handled before application code receives them. |
+| Connection/login timeout | Keep login or connection timeouts short so temporary database delays fail fast and the application can recover quickly (for example, 2-3 seconds). |
 | Maximum connection lifetime | Use a finite pool connection lifetime (for example, around 15 minutes). Close and reopen connections after they return to the pool. |
 | Idle timeout | Keep the pool/client idle timeout shorter than server-side idle cleanup such as `idle_session_timeout` (for example, 10-15 minutes). |
 | Reconnect/retry | Enable short backoff retries on connection-acquisition failures. Enable automatic transaction retries only when the operation is safe and idempotent. |
