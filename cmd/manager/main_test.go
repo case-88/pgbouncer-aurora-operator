@@ -9,8 +9,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	"github.com/jongeun-lim-imweb-me/pgbouncer-aurora-operator/internal/render"
-	"github.com/jongeun-lim-imweb-me/pgbouncer-aurora-operator/internal/statuspage"
+	"github.com/case-88/pgbouncer-aurora-operator/internal/render"
+	"github.com/case-88/pgbouncer-aurora-operator/internal/statuspage"
 )
 
 func TestManagerCacheOptionsRestrictsNamespace(t *testing.T) {

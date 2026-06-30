@@ -21,10 +21,10 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
-	v1alpha1 "github.com/jongeun-lim-imweb-me/pgbouncer-aurora-operator/api/v1alpha1"
-	"github.com/jongeun-lim-imweb-me/pgbouncer-aurora-operator/internal/domain"
-	"github.com/jongeun-lim-imweb-me/pgbouncer-aurora-operator/internal/planner"
-	"github.com/jongeun-lim-imweb-me/pgbouncer-aurora-operator/internal/render"
+	v1alpha1 "github.com/case-88/pgbouncer-aurora-operator/api/v1alpha1"
+	"github.com/case-88/pgbouncer-aurora-operator/internal/domain"
+	"github.com/case-88/pgbouncer-aurora-operator/internal/planner"
+	"github.com/case-88/pgbouncer-aurora-operator/internal/render"
 )
 
 type fakeDiscovery struct {

@@ -12,8 +12,8 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	v1alpha1 "github.com/jongeun-lim-imweb-me/pgbouncer-aurora-operator/api/v1alpha1"
-	"github.com/jongeun-lim-imweb-me/pgbouncer-aurora-operator/internal/postgres"
+	v1alpha1 "github.com/case-88/pgbouncer-aurora-operator/api/v1alpha1"
+	"github.com/case-88/pgbouncer-aurora-operator/internal/postgres"
 )
 
 type fakeDBFactory struct {

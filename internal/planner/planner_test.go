@@ -3,8 +3,8 @@ package planner
 import (
 	"testing"
 
-	v1alpha1 "github.com/jongeun-lim-imweb-me/pgbouncer-aurora-operator/api/v1alpha1"
-	"github.com/jongeun-lim-imweb-me/pgbouncer-aurora-operator/internal/domain"
+	v1alpha1 "github.com/case-88/pgbouncer-aurora-operator/api/v1alpha1"
+	"github.com/case-88/pgbouncer-aurora-operator/internal/domain"
 )
 
 func TestPlanFreezesOnUntrustedDiscovery(t *testing.T) {

@@ -7,8 +7,8 @@ import (
 	"strings"
 	"time"
 
-	v1alpha1 "github.com/jongeun-lim-imweb-me/pgbouncer-aurora-operator/api/v1alpha1"
-	"github.com/jongeun-lim-imweb-me/pgbouncer-aurora-operator/internal/domain"
+	v1alpha1 "github.com/case-88/pgbouncer-aurora-operator/api/v1alpha1"
+	"github.com/case-88/pgbouncer-aurora-operator/internal/domain"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 

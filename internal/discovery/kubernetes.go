@@ -10,8 +10,8 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	v1alpha1 "github.com/jongeun-lim-imweb-me/pgbouncer-aurora-operator/api/v1alpha1"
-	"github.com/jongeun-lim-imweb-me/pgbouncer-aurora-operator/internal/postgres"
+	v1alpha1 "github.com/case-88/pgbouncer-aurora-operator/api/v1alpha1"
+	"github.com/case-88/pgbouncer-aurora-operator/internal/postgres"
 )
 
 type KubernetesRowSource struct {

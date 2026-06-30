@@ -7,9 +7,9 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	v1alpha1 "github.com/jongeun-lim-imweb-me/pgbouncer-aurora-operator/api/v1alpha1"
-	"github.com/jongeun-lim-imweb-me/pgbouncer-aurora-operator/internal/domain"
-	"github.com/jongeun-lim-imweb-me/pgbouncer-aurora-operator/internal/planner"
+	v1alpha1 "github.com/case-88/pgbouncer-aurora-operator/api/v1alpha1"
+	"github.com/case-88/pgbouncer-aurora-operator/internal/domain"
+	"github.com/case-88/pgbouncer-aurora-operator/internal/planner"
 )
 
 func logReasonError(reason string) error {

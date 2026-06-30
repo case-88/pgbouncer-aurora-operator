@@ -15,7 +15,7 @@ import (
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	v1alpha1 "github.com/jongeun-lim-imweb-me/pgbouncer-aurora-operator/api/v1alpha1"
+	v1alpha1 "github.com/case-88/pgbouncer-aurora-operator/api/v1alpha1"
 )
 
 func TestRefreshBuildsSnapshotFromCRStatus(t *testing.T) {
