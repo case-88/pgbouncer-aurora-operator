@@ -6,6 +6,13 @@ const statusHTML = `<!doctype html>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>PgBouncer Aurora Operator Status</title>
+  <script>
+    (function() {
+      var stored = localStorage.getItem("statusTheme");
+      var dark = stored ? stored === "dark" : window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches;
+      document.documentElement.dataset.theme = dark ? "dark" : "light";
+    })();
+  </script>
   <style>
     :root {
       color-scheme: light;
@@ -31,6 +38,31 @@ const statusHTML = `<!doctype html>
       --idle: #6b7280;
       --idle-bg: #eef0f3;
       --shadow: 0 1px 2px rgba(16, 24, 40, 0.06);
+    }
+    :root[data-theme="dark"] {
+      color-scheme: dark;
+      --bg: #111827;
+      --panel: #182231;
+      --panel-soft: #202b3b;
+      --text: #e5e7eb;
+      --muted: #9aa4b2;
+      --line: #334155;
+      --line-soft: #253244;
+      --good: #6ee7b7;
+      --good-bg: #123529;
+      --bad: #fca5a5;
+      --bad-bg: #3b171c;
+      --warn: #fbbf24;
+      --warn-bg: #39290f;
+      --info: #93c5fd;
+      --info-bg: #172f4f;
+      --recent: #fdba74;
+      --recent-bg: #352515;
+      --recent-line: #b45309;
+      --accent: #60a5fa;
+      --idle: #cbd5e1;
+      --idle-bg: #263244;
+      --shadow: 0 1px 2px rgba(0, 0, 0, 0.28);
     }
     * { box-sizing: border-box; }
     body {
@@ -151,7 +183,7 @@ const statusHTML = `<!doctype html>
     }
     .metric.recent {
       border-color: var(--recent-line);
-      background: linear-gradient(180deg, #fffaf5 0%, #ffffff 72%);
+      background: linear-gradient(180deg, var(--recent-bg) 0%, var(--panel) 72%);
       box-shadow: inset 0 3px 0 var(--recent-line), var(--shadow);
     }
     .metric-label {
@@ -233,14 +265,14 @@ const statusHTML = `<!doctype html>
     }
     .cr-row:last-child { border-bottom: 0; }
     .cr-row:hover,
-    .cr-row.active { background: #eef5ff; }
+    .cr-row.active { background: color-mix(in srgb, var(--accent) 12%, var(--panel)); }
     .cr-row.active { box-shadow: inset 3px 0 0 var(--accent); }
     .cr-row.recent {
-      background: #fffaf5;
+      background: var(--recent-bg);
       box-shadow: inset 3px 0 0 var(--recent-line);
     }
     .cr-row.recent.active {
-      background: #eef5ff;
+      background: color-mix(in srgb, var(--accent) 12%, var(--panel));
       box-shadow: inset 3px 0 0 var(--accent), inset 6px 0 0 var(--recent-line);
     }
     .cr-name {
@@ -269,9 +301,9 @@ const statusHTML = `<!doctype html>
     }
     .tag {
       padding: 5px 8px;
-      background: #f4f6f9;
+      background: var(--idle-bg);
       border-color: var(--line);
-      color: #384152;
+      color: var(--text);
     }
     .detail-body { padding: 14px; }
     .detail-head {
@@ -352,7 +384,7 @@ const statusHTML = `<!doctype html>
     }
     th {
       color: var(--muted);
-      background: #fbfcfe;
+      background: var(--panel-soft);
       font-size: 11px;
       font-weight: 760;
       text-transform: uppercase;
@@ -375,11 +407,11 @@ const statusHTML = `<!doctype html>
       border: 1px solid var(--line);
       border-radius: 8px;
       padding: 10px;
-      background: #fff;
+      background: var(--panel);
     }
     .condition.recent {
       border-color: var(--recent-line);
-      background: #fffaf5;
+      background: var(--recent-bg);
       box-shadow: inset 0 3px 0 var(--recent-line);
     }
     .condition-top {
@@ -417,7 +449,7 @@ const statusHTML = `<!doctype html>
       border: 1px solid var(--line);
       border-radius: 8px;
       padding: 10px;
-      background: #fff;
+      background: var(--panel);
     }
     .service-title {
       display: flex;
@@ -476,8 +508,10 @@ const statusHTML = `<!doctype html>
         <div class="subhead" id="subhead">Loading status...</div>
       </div>
       <div class="toolbar" aria-label="overall status">
+        <select id="recentWindowSelect" aria-label="recent window"></select>
         <select id="refreshSelect" aria-label="refresh interval"></select>
         <button class="button" id="refreshButton" type="button">Refresh</button>
+        <button class="button" id="themeButton" type="button">Theme</button>
         <span class="status-pill idle" id="fetchState"><span class="dot"></span>Loading</span>
       </div>
     </header>
@@ -508,6 +542,8 @@ const statusHTML = `<!doctype html>
     var selected = "";
     var timer = null;
     var refreshSeconds = Number(localStorage.getItem("statusRefreshSeconds") || "10");
+    var recentWindowSeconds = Number(localStorage.getItem("statusRecentWindowSeconds") || "0");
+    var theme = localStorage.getItem("statusTheme") || document.documentElement.dataset.theme || "light";
 
     function escapeHtml(value) {
       return String(value == null ? "" : value)
@@ -558,7 +594,13 @@ const statusHTML = `<!doctype html>
     }
 
     function recentWindowMs() {
-      return Math.max(Number((snapshot && snapshot.recentWindowSeconds) || 60), 60) * 1000;
+      return effectiveRecentWindowSeconds() * 1000;
+    }
+
+    function effectiveRecentWindowSeconds() {
+      var value = Number(recentWindowSeconds || (snapshot && snapshot.recentWindowSeconds) || 60);
+      if (!Number.isFinite(value) || value <= 0) value = 60;
+      return Math.min(Math.max(value, 60), 86400);
     }
 
     function formatDuration(seconds) {
@@ -675,6 +717,25 @@ const statusHTML = `<!doctype html>
       select.value = String(refreshSeconds);
     }
 
+    function recentWindowOptions() {
+      var values = [60, 300, 900, 3600, 21600, 86400];
+      var select = document.getElementById("recentWindowSelect");
+      var current = effectiveRecentWindowSeconds();
+      select.innerHTML = values.map(function(value) {
+        return '<option value="' + value + '">Recent ' + formatDuration(value) + '</option>';
+      }).join("");
+      if (values.indexOf(current) < 0) current = 60;
+      recentWindowSeconds = current;
+      select.value = String(current);
+    }
+
+    function applyTheme(value) {
+      theme = value === "dark" ? "dark" : "light";
+      document.documentElement.dataset.theme = theme;
+      localStorage.setItem("statusTheme", theme);
+      document.getElementById("themeButton").textContent = theme === "dark" ? "Light" : "Dark";
+    }
+
     function configureTimer() {
       if (timer) {
         clearInterval(timer);
@@ -699,6 +760,7 @@ const statusHTML = `<!doctype html>
         if (!response.ok) throw new Error("HTTP " + response.status);
         snapshot = await response.json();
         refreshOptions(snapshot.refreshMinIntervalSeconds);
+        recentWindowOptions();
         if (!selected && snapshot.resources && snapshot.resources.length > 0) selected = snapshot.resources[0].name;
         if (snapshot.resources && !snapshot.resources.some(function(item) { return item.name === selected; })) {
           selected = snapshot.resources.length > 0 ? snapshot.resources[0].name : "";
@@ -715,7 +777,7 @@ const statusHTML = `<!doctype html>
       var summary = snapshot.summary || {};
       var generatedAt = formatTime(snapshot.generatedAt) + tzLabel(snapshot.generatedAt);
       document.getElementById("subhead").textContent =
-        snapshot.namespace + " / generated " + generatedAt + " / min refresh " + snapshot.refreshMinIntervalSeconds + "s / recent window " + formatDuration(snapshot.recentWindowSeconds || 60);
+        snapshot.namespace + " / generated " + generatedAt + " / min refresh " + snapshot.refreshMinIntervalSeconds + "s / recent window " + formatDuration(effectiveRecentWindowSeconds());
       document.getElementById("watchName").textContent = "watch " + (snapshot.watchName || "*");
       var items = [
         ["Clusters", summary.clusters || 0, "managed CRs", recentMetricCount("clusters")],
@@ -829,7 +891,16 @@ const statusHTML = `<!doctype html>
       refreshSeconds = Number(event.target.value);
       configureTimer();
     });
+    document.getElementById("recentWindowSelect").addEventListener("change", function(event) {
+      recentWindowSeconds = Number(event.target.value);
+      localStorage.setItem("statusRecentWindowSeconds", String(recentWindowSeconds));
+      render();
+    });
+    document.getElementById("themeButton").addEventListener("click", function() {
+      applyTheme(theme === "dark" ? "light" : "dark");
+    });
 
+    applyTheme(theme);
     loadStatus().then(configureTimer);
   </script>
 </body>
