@@ -8,7 +8,7 @@
 
 `pgbouncer-aurora-operator` watches Aurora PostgreSQL topology, runs one PgBouncer per DB instance (1:1), and keeps the fixed Writer/Reader Kubernetes Services that applications point at aligned with the current Aurora roles. Its core value is eliminating the Reader connection skew that PgBouncer pooling introduces, and automatically reflecting topology changes such as instance scaling and failover into the connection layer.
 
-> Status: public alpha — `v0.1.0-alpha` (CRD API `v1alpha1`). A multi-arch image (`linux/amd64`, `linux/arm64`) is published on Quay and raw Kubernetes manifests ship under `deploy/`. APIs and manifests may still change before a stable release; a Helm chart is not available yet.
+> Status: public alpha — `v0.1.0-alpha.1` (CRD API `v1alpha1`). A multi-arch image (`linux/amd64`, `linux/arm64`) is published on Quay and raw Kubernetes manifests ship under `deploy/`. APIs and manifests may still change before a stable release; a Helm chart is not available yet.
 
 ## Why it exists
 
@@ -201,13 +201,13 @@ The AWS docs recommend "listing individual instance nodes in a host-list" for th
 
 This installs the published public alpha image with `kubectl`. To build and run your own image instead, see [Build from source](#build-from-source-custom-image).
 
-> **Pre-release.** This is an alpha (`v0.1.0-alpha`); the API and manifests may change before a stable release. Pin the explicit version tag shown below — the `latest` tag is intentionally not published. See [Requirements](#requirements) for the cluster, Aurora, IAM, and network prerequisites.
+> **Pre-release.** This is an alpha (`v0.1.0-alpha.1`); the API and manifests may change before a stable release. Pin the explicit version tag shown below — the `latest` tag is intentionally not published. See [Requirements](#requirements) for the cluster, Aurora, IAM, and network prerequisites.
 
 ### 1. Install the operator
 
 ```bash
 # Set your environment
-VERSION=v0.1.0-alpha
+VERSION=v0.1.0-alpha.1
 NAMESPACE=pgbouncer-aurora
 OPERATOR_IMAGE=quay.io/case-88/pgbouncer-aurora-operator:${VERSION}
 RAW=https://raw.githubusercontent.com/case-88/pgbouncer-aurora-operator/${VERSION}/deploy
