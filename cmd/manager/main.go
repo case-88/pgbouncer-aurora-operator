@@ -36,6 +36,16 @@ import (
 
 var scheme = runtime.NewScheme()
 
+const (
+	defaultMaxConcurrentReconciles = 2
+	defaultAWSAPIQPS               = 5
+	defaultAWSAPIBurst             = 10
+	defaultDBProbeQPS              = 50
+	defaultDBProbeBurst            = 100
+	defaultDiscoveryWorkers        = 8
+	defaultMonitorWorkers          = 8
+)
+
 func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 	utilruntime.Must(appsv1.AddToScheme(scheme))
@@ -49,7 +59,7 @@ func main() {
 	var enableLeaderElection bool
 	var awsRegion string
 	var watchNamespace string
-	var watchName string
+	var watchNames watchNameListFlag
 	var maxConcurrentReconciles int
 	var rdsMetadataCacheTTL time.Duration
 	var resyncPeriod time.Duration
@@ -70,19 +80,19 @@ func main() {
 	flag.BoolVar(&enableLeaderElection, "leader-elect", false, "Enable leader election for controller manager.")
 	flag.StringVar(&awsRegion, "aws-region", "", "AWS region for RDS metadata lookups.")
 	flag.StringVar(&watchNamespace, "watch-namespace", "", "Namespace to watch. Defaults to WATCH_NAMESPACE. Empty is invalid.")
-	flag.StringVar(&watchName, "watch-name", "", "PgBouncerAurora resource name to watch. Defaults to WATCH_NAME. Empty or * watches all resources in the namespace.")
-	flag.IntVar(&maxConcurrentReconciles, "max-concurrent-reconciles", 1, "Maximum number of concurrent PgBouncerAurora reconciles.")
+	flag.Var(&watchNames, "watch-names", "Comma-separated PgBouncerAurora resource names to watch. Can be repeated. Defaults to WATCH_NAMES. Empty or * watches all resources in the namespace.")
+	flag.IntVar(&maxConcurrentReconciles, "max-concurrent-reconciles", defaultMaxConcurrentReconciles, "Advanced: maximum number of concurrent PgBouncerAurora reconciles.")
 	flag.DurationVar(&rdsMetadataCacheTTL, "rds-metadata-cache-ttl", time.Minute, "RDS DB instance metadata cache TTL. Values <=0 use the resolver default.")
 	flag.DurationVar(&resyncPeriod, "resync-period", 0, "Controller cache resync period. Defaults to RESYNC_PERIOD or 60s.")
 	flag.DurationVar(&reconcileMinInterval, "reconcile-min-interval", 0, "Minimum interval between heavy reconciles for the same PgBouncerAurora. Defaults to RECONCILE_MIN_INTERVAL or 1s.")
-	flag.Float64Var(&awsAPIQPS, "aws-api-qps", 0, "Global AWS API rate limit QPS. Defaults to AWS_API_QPS or 2.")
-	flag.IntVar(&awsAPIBurst, "aws-api-burst", 0, "Global AWS API rate limit burst. Defaults to AWS_API_BURST or 5.")
-	flag.Float64Var(&dbProbeQPS, "db-probe-qps", 0, "Global DB probe rate limit QPS. Defaults to DB_PROBE_QPS or 20.")
-	flag.IntVar(&dbProbeBurst, "db-probe-burst", 0, "Global DB probe rate limit burst. Defaults to DB_PROBE_BURST or 40.")
-	flag.DurationVar(&monitorJobTimeout, "monitor-job-timeout", 0, "Whole monitor job timeout. Defaults to MONITOR_JOB_TIMEOUT or 8s.")
+	flag.Float64Var(&awsAPIQPS, "aws-api-qps", 0, "Advanced: global AWS API rate limit QPS. Defaults to AWS_API_QPS or 5.")
+	flag.IntVar(&awsAPIBurst, "aws-api-burst", 0, "Advanced: global AWS API rate limit burst. Defaults to AWS_API_BURST or 10.")
+	flag.Float64Var(&dbProbeQPS, "db-probe-qps", 0, "Advanced: global DB probe rate limit QPS. Defaults to DB_PROBE_QPS or 50.")
+	flag.IntVar(&dbProbeBurst, "db-probe-burst", 0, "Advanced: global DB probe rate limit burst. Defaults to DB_PROBE_BURST or 100.")
+	flag.DurationVar(&monitorJobTimeout, "monitor-job-timeout", 0, "Advanced: whole monitor job timeout. Defaults to an internal per-CR dynamic timeout.")
 	flag.DurationVar(&schedulerTick, "scheduler-tick", 0, "Discovery/monitor scheduler tick. Defaults to SCHEDULER_TICK or 1s.")
-	flag.IntVar(&discoveryWorkers, "discovery-workers", 0, "Number of discovery workers. Defaults to DISCOVERY_WORKERS or 2.")
-	flag.IntVar(&monitorWorkers, "monitor-workers", 0, "Number of monitor workers. Defaults to MONITOR_WORKERS or 4.")
+	flag.IntVar(&discoveryWorkers, "discovery-workers", 0, "Advanced: number of discovery workers. Defaults to DISCOVERY_WORKERS or 8.")
+	flag.IntVar(&monitorWorkers, "monitor-workers", 0, "Advanced: number of monitor workers. Defaults to MONITOR_WORKERS or 8.")
 	flag.DurationVar(&statusRefreshMinInterval, "status-refresh-min-interval", 0, "Minimum interval for refreshing the cached /status snapshot. Defaults to STATUS_REFRESH_MIN_INTERVAL or 5s.")
 	flag.DurationVar(&statusRecentWindow, "status-recent-window", 0, "Window for highlighting recently changed /status items. Defaults to STATUS_RECENT_WINDOW or 1m; clamped to 1m..24h.")
 	flag.BoolVar(&zapDevel, "zap-devel", false, "Enable development-mode logging.")
@@ -90,7 +100,7 @@ func main() {
 
 	ctrl.SetLogger(zap.New(zap.UseDevMode(zapDevel)))
 	watchNamespace = effectiveWatchNamespace(watchNamespace)
-	watchName = effectiveWatchName(watchName)
+	watchTarget := effectiveWatchNames(watchNames.String())
 	if err := validateWatchNamespace(watchNamespace); err != nil {
 		ctrl.Log.Error(err, "invalid watch namespace")
 		os.Exit(1)
@@ -105,27 +115,27 @@ func main() {
 		ctrl.Log.Error(err, "invalid reconcile minimum interval")
 		os.Exit(1)
 	}
-	awsAPIQPS, err = effectiveFloat(awsAPIQPS, "AWS_API_QPS", 2)
+	awsAPIQPS, err = effectiveFloat(awsAPIQPS, "AWS_API_QPS", defaultAWSAPIQPS)
 	if err != nil {
 		ctrl.Log.Error(err, "invalid AWS API QPS")
 		os.Exit(1)
 	}
-	awsAPIBurst, err = effectiveInt(awsAPIBurst, "AWS_API_BURST", 5)
+	awsAPIBurst, err = effectiveInt(awsAPIBurst, "AWS_API_BURST", defaultAWSAPIBurst)
 	if err != nil {
 		ctrl.Log.Error(err, "invalid AWS API burst")
 		os.Exit(1)
 	}
-	dbProbeQPS, err = effectiveFloat(dbProbeQPS, "DB_PROBE_QPS", 20)
+	dbProbeQPS, err = effectiveFloat(dbProbeQPS, "DB_PROBE_QPS", defaultDBProbeQPS)
 	if err != nil {
 		ctrl.Log.Error(err, "invalid DB probe QPS")
 		os.Exit(1)
 	}
-	dbProbeBurst, err = effectiveInt(dbProbeBurst, "DB_PROBE_BURST", 40)
+	dbProbeBurst, err = effectiveInt(dbProbeBurst, "DB_PROBE_BURST", defaultDBProbeBurst)
 	if err != nil {
 		ctrl.Log.Error(err, "invalid DB probe burst")
 		os.Exit(1)
 	}
-	monitorJobTimeout, err = effectiveDuration(monitorJobTimeout, "MONITOR_JOB_TIMEOUT", 8*time.Second)
+	monitorJobTimeout, err = effectiveDuration(monitorJobTimeout, "MONITOR_JOB_TIMEOUT", 0)
 	if err != nil {
 		ctrl.Log.Error(err, "invalid monitor job timeout")
 		os.Exit(1)
@@ -135,12 +145,12 @@ func main() {
 		ctrl.Log.Error(err, "invalid scheduler tick")
 		os.Exit(1)
 	}
-	discoveryWorkers, err = effectiveInt(discoveryWorkers, "DISCOVERY_WORKERS", 2)
+	discoveryWorkers, err = effectiveInt(discoveryWorkers, "DISCOVERY_WORKERS", defaultDiscoveryWorkers)
 	if err != nil {
 		ctrl.Log.Error(err, "invalid discovery workers")
 		os.Exit(1)
 	}
-	monitorWorkers, err = effectiveInt(monitorWorkers, "MONITOR_WORKERS", 4)
+	monitorWorkers, err = effectiveInt(monitorWorkers, "MONITOR_WORKERS", defaultMonitorWorkers)
 	if err != nil {
 		ctrl.Log.Error(err, "invalid monitor workers")
 		os.Exit(1)
@@ -158,7 +168,7 @@ func main() {
 	cacheOptions := managerCacheOptions(watchNamespace, resyncPeriod)
 	statusServer := statuspage.NewServer(statuspage.Options{
 		Namespace:          watchNamespace,
-		WatchName:          watchName,
+		WatchName:          watchTarget,
 		RefreshMinInterval: statusRefreshMinInterval,
 		RecentWindow:       statusRecentWindow,
 		Log:                ctrl.Log.WithName("status"),
@@ -206,7 +216,7 @@ func main() {
 		},
 		Monitor:                 pgmonitor.ProbeMonitor{Client: mgr.GetClient(), DBFactory: dbFactory, JobTimeout: monitorJobTimeout, ProbeLimiter: dbProbeLimiter},
 		MaxConcurrentReconciles: maxConcurrentReconciles,
-		WatchName:               watchName,
+		WatchName:               watchTarget,
 		ReconcileMinInterval:    reconcileMinInterval,
 		ScheduleEvents:          scheduleEvents,
 	}
@@ -221,7 +231,7 @@ func main() {
 		Monitor:          reconciler.Monitor,
 		Events:           scheduleEvents,
 		Namespace:        watchNamespace,
-		WatchName:        watchName,
+		WatchName:        watchTarget,
 		Tick:             schedulerTick,
 		DiscoveryWorkers: discoveryWorkers,
 		MonitorWorkers:   monitorWorkers,
@@ -271,11 +281,55 @@ func effectiveWatchNamespace(flagValue string) string {
 	return strings.TrimSpace(os.Getenv("WATCH_NAMESPACE"))
 }
 
-func effectiveWatchName(flagValue string) string {
-	if name := strings.TrimSpace(flagValue); name != "" {
-		return name
+func effectiveWatchNames(flagValue string) string {
+	for _, value := range []string{
+		flagValue,
+		os.Getenv("WATCH_NAMES"),
+	} {
+		if names := normalizeWatchNames(value); names != "" {
+			return names
+		}
 	}
-	return strings.TrimSpace(os.Getenv("WATCH_NAME"))
+	return "*"
+}
+
+type watchNameListFlag struct {
+	values []string
+}
+
+func (f *watchNameListFlag) String() string {
+	return normalizeWatchNames(strings.Join(f.values, ","))
+}
+
+func (f *watchNameListFlag) Set(value string) error {
+	merged := normalizeWatchNames(strings.Join([]string{f.String(), value}, ","))
+	if merged == "" {
+		f.values = nil
+		return nil
+	}
+	f.values = strings.Split(merged, ",")
+	return nil
+}
+
+func normalizeWatchNames(value string) string {
+	parts := strings.Split(value, ",")
+	names := make([]string, 0, len(parts))
+	seen := map[string]struct{}{}
+	for _, part := range parts {
+		name := strings.TrimSpace(part)
+		if name == "" {
+			continue
+		}
+		if name == "*" {
+			return "*"
+		}
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		seen[name] = struct{}{}
+		names = append(names, name)
+	}
+	return strings.Join(names, ",")
 }
 
 func validateWatchNamespace(namespace string) error {

@@ -315,7 +315,7 @@ Endpoint generation rules:
 - Reader endpoint: `{clusterName}.cluster-ro-{domainName}`
 - Instance endpoint: `{dbInstanceIdentifier}.{domainName}`
 
-`spec.discovery.interval` defaults to `3s` to follow Aurora failover quickly. This only raises the Aurora topology query frequency. AWS RDS metadata calls for the auxiliary AZ/`DbiResourceId` data are controlled separately by `spec.discovery.metadataRefreshInterval`, which defaults to `1m`. An RDS API failure only degrades zone-aware placement and physical-identity freshness; it does not invalidate a healthy `aurora_replica_status()` topology.
+`spec.discovery.interval` defaults to `3s` to follow Aurora failover quickly. This only raises the Aurora topology query frequency. AWS RDS metadata calls for the auxiliary AZ/`DbiResourceId` data are controlled separately by `spec.discovery.metadataRefreshInterval`, which defaults to `1m`. Metadata refresh uses the same timeout as discovery DB queries. An RDS API failure or timeout only degrades zone-aware placement and physical-identity freshness; it does not invalidate a healthy `aurora_replica_status()` topology.
 
 The operator does not infer the AWS region from `spec.discovery.domainName`. RDS metadata lookups use the operator process flag `--aws-region`, so this region must match the region of the Aurora cluster that `domainName` points at. For multi-region operation, run a separate operator deployment per region.
 
@@ -449,16 +449,18 @@ The PgBouncer auth file Secret referenced by `spec.pgbouncer.authFileSecretRef`:
 
 ### Operator
 
-The operator is a Deployment that watches a single namespace; the default manifest uses `replicas: 1` and enables leader election. The default manifest is [`deploy/operator.yaml`](deploy/operator.yaml), and the watch target is set by `--watch-namespace` (defaults to the operator Pod's namespace) and `--watch-name` (defaults to `*`, all CRs in that namespace).
+The operator is a Deployment that watches a single namespace; the default manifest uses `replicas: 1` and enables leader election. The default manifest is [`deploy/operator.yaml`](deploy/operator.yaml), and the watch target is set by `--watch-namespace` (defaults to the operator Pod's namespace) and `--watch-names` (defaults to `*`, all CRs in that namespace).
 
 > [!IMPORTANT]
 > **Recommended deployment unit — up to 4–5 CRs per operator**
 >
-> A single operator can comfortably manage up to 4–5 CRs without load issues. (Beyond that has not been tested yet.) You can narrow an operator to watch a specific CR with `--watch-name`.
+> Treat one operator managing roughly 20 Aurora instances across up to 4–5 CRs as the default deployment unit. Internal worker and rate-limit defaults are set conservatively for this scale, including full-timeout failure scenarios. Beyond that has not been tested yet. You can narrow an operator to specific CRs with `--watch-names`.
 
 #### Operator flags
 
 These are manager process flags, not CR options.
+
+Only the public operational flags are listed below. Reconcile concurrency, scheduler workers, DB/RDS rate limits, and monitor job timeouts are managed by internal runtime defaults. Tune those advanced escape hatches only for larger clusters or explicit failure testing.
 
 | Flag | Default | Unit | Description |
 |---|---|---|---|
@@ -467,19 +469,7 @@ These are manager process flags, not CR options.
 | `--leader-elect` | `false` | boolean | Enable controller-runtime leader election. The default manifest passes this flag. |
 | `--aws-region` | `""` | AWS region | Single AWS region for RDS metadata lookups. Must match the Aurora region the managed CRs use. The default manifest sets `ap-northeast-2`. |
 | `--watch-namespace` | `WATCH_NAMESPACE` | namespace | Namespace the manager watches. Required. Cluster-wide watch is not supported. The default manifest uses the operator Pod namespace. |
-| `--watch-name` | `WATCH_NAME` | CR name | Optional `PgBouncerAurora` name filter. Empty/`*` watches all CRs in `--watch-namespace`; a specific name watches only that CR. |
-| `--max-concurrent-reconciles` | `1` | reconciles | Maximum concurrent `PgBouncerAurora` reconciles. |
-| `--reconcile-min-interval` | `RECONCILE_MIN_INTERVAL` or `1s` | Go duration | Minimum interval between heavy reconciles for the same CR. Event-driven reconciles within this window are throttled and requeued after the remaining time. |
-| `--resync-period` | `RESYNC_PERIOD` or `60s` | Go duration | controller-runtime cache resync period. A safety net, not the Writer discovery/monitor polling mechanism. |
-| `--rds-metadata-cache-ttl` | `1m` | Go duration | Cache TTL for successful RDS DB instance metadata. |
-| `--aws-api-qps` | `AWS_API_QPS` or `2` | requests/sec | Global AWS API rate limit used by RDS metadata discovery. |
-| `--aws-api-burst` | `AWS_API_BURST` or `5` | requests | Global AWS API rate limit burst. |
-| `--db-probe-qps` | `DB_PROBE_QPS` or `20` | probes/sec | Global DB probe rate limit used by monitor probes. |
-| `--db-probe-burst` | `DB_PROBE_BURST` or `40` | probes | Global DB probe rate limit burst. |
-| `--monitor-job-timeout` | `MONITOR_JOB_TIMEOUT` or `8s` | Go duration | Whole monitor job timeout. The per-probe timeout follows `spec.monitor.timeout`. |
-| `--scheduler-tick` | `SCHEDULER_TICK` or `1s` | Go duration | Central scheduler scan interval for due discovery/monitor checks. |
-| `--discovery-workers` | `DISCOVERY_WORKERS` or `2` | workers | Number of bounded discovery workers. |
-| `--monitor-workers` | `MONITOR_WORKERS` or `4` | workers | Number of bounded monitor workers. |
+| `--watch-names` | `WATCH_NAMES` | CR names | Optional `PgBouncerAurora` name filter. Empty/`*` watches all CRs in `--watch-namespace`; `a,b,c` or repeated `--watch-names=a --watch-names=b` watches only those CRs. |
 | `--status-refresh-min-interval` | `STATUS_REFRESH_MIN_INTERVAL` or `5s` | Go duration | Minimum refresh interval for the cached snapshot the `/status` dashboard shows. |
 | `--status-recent-window` | `STATUS_RECENT_WINDOW` or `1m` | Go duration | Time window used to highlight recently changed `/status` items. Values are clamped to `1m`–`24h`. |
 | `--zap-devel` | `false` | boolean | Enable development-mode logging. |

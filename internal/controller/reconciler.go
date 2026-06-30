@@ -67,6 +67,7 @@ const (
 	defaultDiscoveryInterval = 3 * time.Second
 	defaultMonitorInterval   = 10 * time.Second
 	minCheckInterval         = time.Second
+	defaultMaxReconciles     = 2
 )
 
 func (r *PgBouncerAuroraReconciler) refreshResourceFromAPI(ctx context.Context, key types.NamespacedName, resource *v1alpha1.PgBouncerAurora) error {
@@ -943,7 +944,7 @@ func (r *PgBouncerAuroraReconciler) maxConcurrentReconciles() int {
 	if r.MaxConcurrentReconciles > 0 {
 		return r.MaxConcurrentReconciles
 	}
-	return 1
+	return defaultMaxReconciles
 }
 
 func (r *PgBouncerAuroraReconciler) reconcileMinInterval() time.Duration {
@@ -1002,8 +1003,7 @@ func (r *PgBouncerAuroraReconciler) requestsForManagedPod(ctx context.Context, o
 }
 
 func (r *PgBouncerAuroraReconciler) matchesWatchName(name string) bool {
-	watchName := strings.TrimSpace(r.WatchName)
-	return watchName == "" || watchName == "*" || watchName == name
+	return matchesWatchNames(r.WatchName, name)
 }
 
 func requeueAfter(resource *v1alpha1.PgBouncerAurora) time.Duration {

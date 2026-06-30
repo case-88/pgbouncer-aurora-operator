@@ -37,16 +37,48 @@ func TestEffectiveWatchNamespacePrefersFlagThenEnv(t *testing.T) {
 	}
 }
 
-func TestEffectiveWatchNamePrefersFlagThenEnv(t *testing.T) {
-	t.Setenv("WATCH_NAME", "env-cr")
-	if got := effectiveWatchName(" flag-cr "); got != "flag-cr" {
-		t.Fatalf("flag name should win: %q", got)
+func TestEffectiveWatchNamesPrefersFlagsThenEnv(t *testing.T) {
+	t.Setenv("WATCH_NAMES", "env-a, env-b")
+	if got := effectiveWatchNames(" flag-a, flag-b "); got != "flag-a,flag-b" {
+		t.Fatalf("watch-names flag should win: %q", got)
 	}
-	if got := effectiveWatchName(""); got != "env-cr" {
-		t.Fatalf("env name should be used: %q", got)
+	if got := effectiveWatchNames(""); got != "env-a,env-b" {
+		t.Fatalf("WATCH_NAMES env should be used: %q", got)
 	}
-	if got := effectiveWatchName(" * "); got != "*" {
+	t.Setenv("WATCH_NAMES", "")
+	if got := effectiveWatchNames(""); got != "*" {
+		t.Fatalf("empty watch names should watch all: %q", got)
+	}
+	if got := effectiveWatchNames(" * "); got != "*" {
 		t.Fatalf("star should be preserved: %q", got)
+	}
+}
+
+func TestNormalizeWatchNames(t *testing.T) {
+	if got := normalizeWatchNames(" db-a, db-b ,, db-a "); got != "db-a,db-b" {
+		t.Fatalf("normalized watch names = %q", got)
+	}
+	if got := normalizeWatchNames("db-a,*"); got != "*" {
+		t.Fatalf("star should watch all: %q", got)
+	}
+}
+
+func TestWatchNameListFlagAppendsRepeatedValues(t *testing.T) {
+	var flag watchNameListFlag
+	if err := flag.Set("db-a, db-b"); err != nil {
+		t.Fatal(err)
+	}
+	if err := flag.Set("db-c"); err != nil {
+		t.Fatal(err)
+	}
+	if got := flag.String(); got != "db-a,db-b,db-c" {
+		t.Fatalf("watch names flag = %q", got)
+	}
+	if err := flag.Set("*"); err != nil {
+		t.Fatal(err)
+	}
+	if got := flag.String(); got != "*" {
+		t.Fatalf("star should replace watch names: %q", got)
 	}
 }
 

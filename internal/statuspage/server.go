@@ -323,7 +323,16 @@ func conditionStatus(conditions []metav1.Condition, conditionType string) metav1
 
 func matchesWatchName(watchName string, name string) bool {
 	watchName = strings.TrimSpace(watchName)
-	return watchName == "" || watchName == "*" || watchName == name
+	if watchName == "" || watchName == "*" {
+		return true
+	}
+	for _, part := range strings.Split(watchName, ",") {
+		item := strings.TrimSpace(part)
+		if item == "*" || item == name {
+			return true
+		}
+	}
+	return false
 }
 
 func cloneInstanceStatuses(in []v1alpha1.InstanceStatus) []v1alpha1.InstanceStatus {

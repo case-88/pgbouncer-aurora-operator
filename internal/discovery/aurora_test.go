@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	v1alpha1 "github.com/jongeun-lim-imweb-me/pgbouncer-aurora-operator/api/v1alpha1"
 	"github.com/jongeun-lim-imweb-me/pgbouncer-aurora-operator/internal/domain"
@@ -21,13 +22,15 @@ func (f fakeRowsSource) Rows(ctx context.Context, resource *v1alpha1.PgBouncerAu
 }
 
 type fakeMetadataResolver struct {
-	metadata map[string]InstanceMetadata
-	err      error
-	seen     []string
+	metadata    map[string]InstanceMetadata
+	err         error
+	seen        []string
+	hasDeadline bool
 }
 
 func (f *fakeMetadataResolver) Resolve(ctx context.Context, resource *v1alpha1.PgBouncerAurora, instanceNames []string) (map[string]InstanceMetadata, error) {
 	f.seen = append([]string{}, instanceNames...)
+	_, f.hasDeadline = ctx.Deadline()
 	return f.metadata, f.err
 }
 
@@ -288,6 +291,20 @@ func TestProviderResolvesUniqueSortedMetadata(t *testing.T) {
 	}
 	if !reflect.DeepEqual(resolver.seen, []string{"db-1", "db-2"}) {
 		t.Fatalf("resolved names = %#v", resolver.seen)
+	}
+}
+
+func TestProviderUsesDiscoveryTimeoutForMetadataResolve(t *testing.T) {
+	resource := sampleResource()
+	resource.Spec.Discovery.Timeout.Duration = 2 * time.Second
+	resolver := &fakeMetadataResolver{metadata: sampleMetadata()}
+	provider := Provider{Rows: fakeRowsSource{rows: sampleRows()}, Metadata: resolver}
+
+	if _, err := provider.Discover(context.Background(), resource); err != nil {
+		t.Fatal(err)
+	}
+	if !resolver.hasDeadline {
+		t.Fatalf("metadata resolver should receive a deadline")
 	}
 }
 

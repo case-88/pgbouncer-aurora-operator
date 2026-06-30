@@ -40,6 +40,11 @@ type Scheduler struct {
 	inFlight      map[string]struct{}
 }
 
+const (
+	defaultDiscoveryWorkers = 8
+	defaultMonitorWorkers   = 8
+)
+
 func (s *Scheduler) Start(ctx context.Context) error {
 	tick := s.tick()
 	ticker := time.NewTicker(tick)
@@ -443,22 +448,35 @@ func schedulerDue(resource *v1alpha1.PgBouncerAurora, now metav1.Time) bool {
 }
 
 func schedulerMatchesWatchName(watchName string, name string) bool {
-	watchName = strings.TrimSpace(watchName)
-	return watchName == "" || watchName == "*" || watchName == name
+	return matchesWatchNames(watchName, name)
+}
+
+func matchesWatchNames(watchNames string, name string) bool {
+	watchNames = strings.TrimSpace(watchNames)
+	if watchNames == "" || watchNames == "*" {
+		return true
+	}
+	for _, part := range strings.Split(watchNames, ",") {
+		watchName := strings.TrimSpace(part)
+		if watchName == "*" || watchName == name {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Scheduler) discoveryWorkers() int {
 	if s.DiscoveryWorkers > 0 {
 		return s.DiscoveryWorkers
 	}
-	return 2
+	return defaultDiscoveryWorkers
 }
 
 func (s *Scheduler) monitorWorkers() int {
 	if s.MonitorWorkers > 0 {
 		return s.MonitorWorkers
 	}
-	return 4
+	return defaultMonitorWorkers
 }
 
 func cachedDiscovery(resource *v1alpha1.PgBouncerAurora) domain.DiscoveryResult {

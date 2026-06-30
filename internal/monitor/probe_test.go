@@ -400,10 +400,16 @@ func TestProbeMonitorReturnsErrorWhenJobTimeoutExpires(t *testing.T) {
 }
 
 func TestProbeMonitorJobTimeoutDefaultAndOverride(t *testing.T) {
-	if got := (ProbeMonitor{}).jobTimeout(); got != 8*time.Second {
+	resource, _ := monitorTestResource(t)
+	resource.Spec.Monitor.Timeout.Duration = 3 * time.Second
+	resource.Spec.Monitor.MaxConcurrency = 4
+	if got := (ProbeMonitor{}).jobTimeout(resource, 4); got != 8*time.Second {
 		t.Fatalf("default job timeout = %s", got)
 	}
-	if got := (ProbeMonitor{JobTimeout: time.Second}).jobTimeout(); got != time.Second {
+	if got := (ProbeMonitor{}).jobTimeout(resource, 20); got != 17*time.Second {
+		t.Fatalf("scaled job timeout = %s", got)
+	}
+	if got := (ProbeMonitor{JobTimeout: time.Second}).jobTimeout(resource, 20); got != time.Second {
 		t.Fatalf("override job timeout = %s", got)
 	}
 }

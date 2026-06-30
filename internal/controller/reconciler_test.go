@@ -1199,10 +1199,13 @@ func TestRequestsForManagedPodHonorsWatchName(t *testing.T) {
 	if got := (&PgBouncerAuroraReconciler{WatchName: "sample"}).requestsForManagedPod(context.Background(), pod); len(got) != 1 {
 		t.Fatalf("matching watch name should enqueue: %#v", got)
 	}
+	if got := (&PgBouncerAuroraReconciler{WatchName: "other,sample"}).requestsForManagedPod(context.Background(), pod); len(got) != 1 {
+		t.Fatalf("matching watch names should enqueue: %#v", got)
+	}
 }
 
 func TestMatchesWatchName(t *testing.T) {
-	for _, watchName := range []string{"", "*", " sample "} {
+	for _, watchName := range []string{"", "*", " sample ", "other,sample", "other, sample "} {
 		if !(&PgBouncerAuroraReconciler{WatchName: watchName}).matchesWatchName("sample") {
 			t.Fatalf("watch name %q should match sample", watchName)
 		}
@@ -1285,7 +1288,7 @@ func TestGenerationChangedPredicateIgnoresStatusOnlyUpdates(t *testing.T) {
 }
 
 func TestMaxConcurrentReconcilesDefaultAndOverride(t *testing.T) {
-	if got := (&PgBouncerAuroraReconciler{}).maxConcurrentReconciles(); got != 1 {
+	if got := (&PgBouncerAuroraReconciler{}).maxConcurrentReconciles(); got != 2 {
 		t.Fatalf("default max concurrent reconciles mismatch: %d", got)
 	}
 	if got := (&PgBouncerAuroraReconciler{MaxConcurrentReconciles: 3}).maxConcurrentReconciles(); got != 3 {
