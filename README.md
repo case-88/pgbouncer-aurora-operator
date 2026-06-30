@@ -1,6 +1,12 @@
 # pgbouncer-aurora-operator
 
-`pgbouncer-aurora-operator` watches Aurora PostgreSQL topology, runs one PgBouncer per DB instance (1:1), and keeps the fixed writer/reader Kubernetes Services that applications point at aligned with the current Aurora roles. Its core value is eliminating the reader connection skew that PgBouncer pooling introduces, and automatically reflecting topology changes such as instance scaling and failover into the connection layer.
+[![Release](https://img.shields.io/github/v/release/case-88/pgbouncer-aurora-operator?include_prereleases&label=release)](https://github.com/case-88/pgbouncer-aurora-operator/releases)
+[![License](https://img.shields.io/github/license/case-88/pgbouncer-aurora-operator)](LICENSE)
+[![Go](https://img.shields.io/github/go-mod/go-version/case-88/pgbouncer-aurora-operator)](go.mod)
+[![Go Report](https://goreportcard.com/badge/github.com/case-88/pgbouncer-aurora-operator)](https://goreportcard.com/report/github.com/case-88/pgbouncer-aurora-operator)
+[![Image](https://img.shields.io/badge/image-quay.io%2Fcase--88%2Fpgbouncer--aurora--operator-blue)](https://quay.io/repository/case-88/pgbouncer-aurora-operator)
+
+`pgbouncer-aurora-operator` watches Aurora PostgreSQL topology, runs one PgBouncer per DB instance (1:1), and keeps the fixed Writer/Reader Kubernetes Services that applications point at aligned with the current Aurora roles. Its core value is eliminating the Reader connection skew that PgBouncer pooling introduces, and automatically reflecting topology changes such as instance scaling and failover into the connection layer.
 
 > Status: public alpha — `v0.1.0-alpha` (CRD API `v1alpha1`). A multi-arch image (`linux/amd64`, `linux/arm64`) is published on Quay and raw Kubernetes manifests ship under `deploy/`. APIs and manifests may still change before a stable release; a Helm chart is not available yet.
 
@@ -8,21 +14,21 @@
 
 A typical "PgBouncer in front of Aurora" setup has two limitations.
 
-1. **The Aurora reader endpoint cannot spread a connection pool.** The reader endpoint only picks an instance at connection time (DNS resolution). A long-lived pool connection, once established, is pinned to that instance — so in a pooled environment load skews onto one particular reader (reader connection skew).
+1. **The Aurora Reader endpoint cannot spread a connection pool.** The Reader endpoint only picks an instance at connection time (DNS resolution). A long-lived pool connection, once established, is pinned to that instance — so in a pooled environment load skews onto one particular Reader (Reader connection skew).
 
-2. **Topology changes are not reflected automatically.** Static config or a single cluster endpoint cannot follow instances that change through scale-out, replacement, or promotion. To use a newly added Aurora instance, you have to define the corresponding PgBouncer deployment by hand each time.
+2. **Topology changes are not reflected automatically.** If PgBouncer is pointed directly at a single Aurora instance endpoint to avoid problem #1, it does not follow instances that change through scale-out, replacement, or promotion. To use a newly added Aurora instance, you have to define the corresponding PgBouncer deployment by hand each time.
 
-3. **The Aurora cluster endpoint is strongly affected by DNS cache, TTL, and refresh behavior.** After failover, even if the cluster endpoint points at the new writer, stale endpoint/IP data can remain in use longer depending on DNS settings.
+3. **The Aurora cluster endpoint is strongly affected by DNS cache, TTL, and refresh behavior.** After failover, even if the cluster endpoint points at the new Writer, stale endpoint/IP data can remain in use longer depending on DNS settings.
 
-This operator watches Aurora topology, updates per-instance writer/reader Kubernetes Service membership through operator-managed Pod labels, and connects each PgBouncer directly to a single Aurora instance (1:1). This fills these gaps — per-instance PgBouncer Pods spread reader load instead of concentrating it on one endpoint, and new instances are automatically joined to the Service of their role.
+This operator watches Aurora topology, updates per-instance Writer/Reader Kubernetes Service membership through operator-managed Pod labels, and connects each PgBouncer directly to a single Aurora instance (1:1). This fills these gaps — per-instance PgBouncer Pods spread Reader load instead of concentrating it on one endpoint, and new instances are automatically joined to the Service of their role.
 
 ## What it does
 
 ```mermaid
 flowchart LR
   App[Application Pods]
-  WriterSvc[Writer Service\nwriter / writer]
-  ReaderSvc[Reader Service\nreader / reader]
+  WriterSvc[Writer Service]
+  ReaderSvc[Reader Service]
   PerSvc[Per-instance Services]
   Pods[PgBouncer Deployments\none per Aurora instance]
   Aurora[(Aurora PostgreSQL Cluster)]
@@ -50,27 +56,27 @@ flowchart LR
 
 ### Key features
 
-- **Automatic Aurora topology sync** — detects instance add/remove and writer failover, and reflects them into writer/reader Service membership.
-- **Per-instance 1:1 PgBouncer** — resolves reader connection skew.
-- **Fast writer failover detection** — once trusted Discovery confirms the new writer and its PgBouncer Pod is Ready, the writer Service membership is switched first without waiting for the next Monitor success (fast path).
+- **Automatic Aurora topology sync** — detects instance add/remove and Writer failover, and reflects them into Writer/Reader Service membership.
+- **Per-instance 1:1 PgBouncer** — resolves Reader connection skew.
+- **Fast Writer failover detection** — once trusted Discovery confirms the new Writer and its PgBouncer Pod is Ready, the Writer Service membership is switched first without waiting for the next Monitor success (fast path).
 - **Zone-aware placement** — places each PgBouncer Pod on a node in the same AZ as its Aurora instance, preferred or required.
 - **Safety mechanisms** — last-known-good retention and freeze keep the last verified healthy traffic state when observations are uncertain.
-- **Built-in status dashboard** — the operator serves a `/status` web UI and `/status.json` that show managed CRs, topology, writer/reader membership, and conditions at a glance ([Status dashboard](#status-dashboard-status)).
+- **Built-in status dashboard** — the operator serves a `/status` web UI and `/status.json` that show managed CRs, topology, Writer/Reader membership, and conditions at a glance ([Status dashboard](#status-dashboard-status)).
 
 ### How it works
 
 - **Discovery**
-  - Builds Aurora writer/reader endpoints from `spec.discovery.clusterName`, `spec.discovery.domainName`, and `spec.discovery.port`, then queries `aurora_replica_status()`.
-  - If the writer endpoint is briefly unavailable during failover, it immediately retries with the reader endpoint built in the same discovery tick.
-  - Determines role from `session_id` (`MASTER_SESSION_ID` = writer).
+  - Builds Aurora Writer/Reader cluster endpoints from `spec.discovery.clusterName`, `spec.discovery.domainName`, and `spec.discovery.port`, then queries `aurora_replica_status()` through the Writer cluster endpoint by default.
+  - If the Writer cluster endpoint is briefly unavailable during failover, it immediately retries with the Reader cluster endpoint built in the same discovery tick.
+  - Determines role from `session_id` (`MASTER_SESSION_ID` = Writer).
   - Instance endpoints are generated deterministically as `{instanceName}.{domainName}`.
   - RDS metadata is used only to enrich the AZ for zone-aware scheduling and `DbiResourceId` (physical instance identity); it is not used as the topology source of truth.
   - A failed RDS metadata refresh does not drop a healthy Aurora SQL discovery to untrusted.
 
 - **Rendering**
   - Creates one ConfigMap, Deployment, and Service per discovered Aurora DB instance.
-  - Renders PgBouncer `[databases]` as a wildcard route to the corresponding Aurora instance.
-  - Creates role Services for writer/reader traffic.
+  - By default, renders a PgBouncer `[databases]` wildcard route to the corresponding Aurora instance. You can add or override database entries, but each entry's `host`/`port` is still managed per instance by the operator.
+  - Creates role Services for Writer/Reader traffic.
   - Role Services use operator-managed Pod labels as the Kubernetes Service selector.
 
 - **Monitoring**
@@ -78,7 +84,7 @@ flowchart LR
   - Optionally connects directly to the backend DB and checks role/health via `pg_is_in_recovery()` and `transaction_read_only`.
   - Optionally checks the PgBouncer path via the per-instance PgBouncer Service with `select 1`.
   - Applies failure/recovery thresholds before changing healthy Service membership.
-  - During writer failover, Discovery is the source of truth for role, and Monitor is treated as a sanity check rather than the primary gate.
+  - During Writer failover, Discovery is the source of truth for role, and Monitor is treated as a sanity check rather than the primary gate.
 
 - **Topology handling**
   - New Aurora instances get new PgBouncer resources.
@@ -93,48 +99,50 @@ The value of this operator is "automatic topology reflection." Its responsibilit
 
 PgBouncer is a lightweight, high-performance **connection pooler**, not an HA proxy, and this operator does not change that nature. What the operator does is keep the pooling layer always pointed at the instances with the correct roles.
 
-- **The nature of Aurora failover**: at promotion, connections to the old writer are dropped, and any in-flight transactions at that moment fail 100%. This is inherent to Aurora failover regardless of what proxy sits in front.
-- **Default behavior is non-destructive**: when the writer changes, the operator only switches Service membership and does not forcibly move already-established app→PgBouncer connections (`writerChangeConnectionHandling: KeepExisting`).
+- **The nature of Aurora failover**: at promotion, connections to the old Writer are dropped, and any in-flight transactions at that moment fail 100%. This is inherent to Aurora failover regardless of what proxy sits in front.
+- **Default behavior is non-destructive**: when the Writer changes, the operator only switches Service membership and does not forcibly move already-established app→PgBouncer connections (`writerChangeConnectionHandling: KeepExisting`).
 - **Optional connection cleanup**: to drop the stale server connections of an instance whose role changed and induce reconnection, you can set `writerChangeConnectionHandling` to `RestartWriters`/`RestartAll`. Per-instance Deployments use `RollingUpdate(maxUnavailable=0, maxSurge=1)`, so **running with `replicas: 2` or more makes this a rolling restart that avoids taking all PgBouncer replicas for that instance down at once** — Pods are replaced one at a time while the instance keeps serving new connections (existing connections on a restarted Pod are still dropped). With `replicas: 1`, the instance has a brief interruption during the restart. Therefore **`replicas: 2` or more is recommended in production**.
 
 If you need strong zero-downtime HA at the level of preserving connections, consider a layer designed for that purpose, such as Pgpool-II or PgCat.
 
 ### What the application is responsible for
 
-Detecting disconnects, reconnecting, retrying, and deciding which role (writer/reader) to use a connection for are **the application's responsibility** and out of scope for this project (Non-goals: HA, zero-downtime failover, in-flight transaction recovery, query-time role selection).
+Detecting disconnects, reconnecting, retrying, and deciding which role (Writer/Reader) to use a connection for are **the application's responsibility** and out of scope for this project (Non-goals: HA, zero-downtime failover, in-flight transaction recovery, query-time role selection).
 
-This operator only updates Kubernetes Services and PgBouncer workloads when Aurora topology changes; it does not move already-established app→PgBouncer TCP connections to a different Pod. Existing connections keep using the current PgBouncer process until the application or PgBouncer closes them, or the optional writer-change restart policy drops them.
+This operator only updates Kubernetes Services and PgBouncer workloads when Aurora topology changes; it does not move already-established app→PgBouncer TCP connections to a different Pod. Existing connections keep using the current PgBouncer process until the application or PgBouncer closes them, or the optional Writer change restart policy drops them.
 
-So the application must configure connection lifetime and reconnection behavior. As a practical starting point, recycle pool connections **every 15 minutes** and then tune to your actual workload. The key is to periodically close and reopen not only idle connections but also in-use ones — so stale topology information does not linger in the pool.
+So the application must configure connection lifetime, connection validation, and reconnection behavior. The goal is to avoid keeping stale topology, already-closed server sessions, or wrong-role connections in the pool for too long.
 
 ### Recommended application settings
 
+> The values below are conservative starting examples. Real values depend on the driver, pool framework, workload, and DB/PgBouncer timeout policies. Tune them from production observations.
+
 | Item | Recommended |
 |---|---|
-| Borrow/acquire health check | Validate a connection before handing it to application code. Use a lightweight query like `SELECT 1`, and if the pool separates writer/reader connections, also do an appropriate role check. |
-| Periodic idle connection check | Periodically validate idle pool connections to remove broken/abnormal ones before use. |
-| Maximum connection lifetime | **15 minutes**. Periodically close and reopen even in-use connections after they return to the pool. |
-| Idle timeout | Set a finite idle timeout so unused connections do not survive indefinitely after a topology change. |
+| Connection validation / keepalive | Prefer the validation, keepalive, or ping features built into your driver/pool framework. If you split Writer/Reader connections, also consider role checks such as `targetServerType`. |
+| Periodic idle connection check | Periodically validate idle pooled connections so connections already closed by the DB server or network are detected and handled before application code receives them. |
+| Maximum connection lifetime | Use a finite pool connection lifetime (for example, around 15 minutes). Close and reopen connections after they return to the pool. |
+| Idle timeout | Keep the pool/client idle timeout shorter than server-side idle cleanup such as `idle_session_timeout` (for example, 10-15 minutes). |
 | Reconnect/retry | Enable short backoff retries on connection-acquisition failures. Enable automatic transaction retries only when the operation is safe and idempotent. |
 | Pool size | Keep the number of backend connections fixed and finite. `number of application instances × pool size` should stay comfortably below the `max_connections` equivalent limit of the DB/PgBouncer. |
-| DNS cache TTL | Avoid infinite DNS caching, especially in JVM-based applications. |
+| DNS cache TTL | Avoid infinite DNS caching and use a short TTL (for example, no later than about 30 seconds). |
 
 ### Application connection guide
 
 There are three ways for an application to point at the Services the operator creates. With any of them, the operator reflects failover/scale changes by updating each Service's membership.
 
-**Method 1 — two writer/reader Services as a host-list + `targetServerType` (driver role check)**
+**Method 1 — two Writer/Reader Services as a host-list + `targetServerType` (driver role check)**
 
 ```text
 postgresql://example-pg-writer.<namespace>.svc.cluster.local:6432,example-pg-reader.<namespace>.svc.cluster.local:6432/db?targetServerType=primary
 ```
 
-- The driver takes these two Services as a host-list and picks the target directly by role according to `targetServerType` — `primary` attaches to the writer, `secondary`/`preferSecondary` attaches to the reader. The example above is a write connection (`primary`); a read connection uses the same host-list with `secondary`. During the failover transition, whichever Service points at whichever role, the driver re-checks the actual role and follows it.
+- The driver takes these two Services as a host-list and picks the target directly by role according to `targetServerType` — `primary` attaches to the Writer, `secondary`/`preferSecondary` attaches to the Reader. The example above is a write connection (`primary`); a read connection uses the same host-list with `secondary`. During the failover transition, whichever Service points at whichever role, the driver re-checks the actual role and follows it.
 - The Service names (`<cr-name>-writer`, `<cr-name>-reader`) are fixed and the operator updates membership, so Aurora scale/topology changes are reflected automatically.
 
-**Method 2 — split read/write connections to the reader/writer Service respectively (simplest)**
+**Method 2 — split read/write connections to the Reader/Writer Service respectively (simplest)**
 
-Point write-only connections at the writer Service and read-only connections at the reader Service.
+Point write-only connections at the Writer Service and read-only connections at the Reader Service.
 
 ```text
 # write-only datasource
@@ -144,7 +152,7 @@ postgresql://example-pg-reader.<namespace>.svc.cluster.local:6432/db
 ```
 
 - This is the most natural setup if the application already splits read/write datasources. It does not require driver host-list or `targetServerType` support.
-- Even when the writer changes due to failover, the operator updates the writer Service membership to the new writer, so the application keeps using the same Service address.
+- Even when the Writer changes due to failover, the operator updates the Writer Service membership to the new Writer, so the application keeps using the same Service address.
 
 **Method 3 — individual instance Services as a host-list**
 
@@ -166,7 +174,7 @@ Driver-side fast failover settings align with the recommendations in the AWS doc
 - DNS TTL under 30 seconds (JVM: `networkaddress.cache.ttl=1`, `networkaddress.cache.negative.ttl=3`).
 - Specify the target with `targetServerType` (`primary`/`secondary`/`preferSecondary`/`any`).
 
-The AWS docs recommend "listing individual instance nodes in a host-list" for the best failover, while noting its downside: "requires manual update on topology change." Methods 1 and 2 above (pointing at the writer/reader Services) automate exactly that manual update via the operator, so the application only needs to point at the writer/reader Services.
+The AWS docs recommend "listing individual instance nodes in a host-list" for the best failover, while noting its downside: "requires manual update on topology change." Methods 1 and 2 above (pointing at the Writer/Reader Services) automate exactly that manual update via the operator, so the application only needs to point at the Writer/Reader Services.
 
 ## Requirements
 
@@ -289,11 +297,11 @@ spec:
 |---|---:|---|---|---|
 | `spec.discovery.clusterName` | Yes | none | string | Aurora DB cluster identifier prefix used to build cluster endpoints. e.g. `example-pg`. |
 | `spec.discovery.domainName` | Yes | none | DNS suffix | Common Aurora endpoint suffix. e.g. `xxxx.ap-northeast-2.rds.amazonaws.com`. |
-| `spec.discovery.port` | No | `5432` | TCP port | Port for the generated writer/reader/instance endpoints. |
-| `spec.discovery.clusterEndpoints.writer.host` | Advanced | generated | DNS name | Explicit writer endpoint override. |
-| `spec.discovery.clusterEndpoints.writer.port` | Advanced | `spec.discovery.port` | TCP port | Explicit writer endpoint port override. |
-| `spec.discovery.clusterEndpoints.reader.host` | Advanced | generated | DNS name | Explicit reader endpoint override. |
-| `spec.discovery.clusterEndpoints.reader.port` | Advanced | `spec.discovery.port` | TCP port | Explicit reader endpoint port override. |
+| `spec.discovery.port` | No | `5432` | TCP port | Port for the generated Writer/Reader/Instance endpoints. |
+| `spec.discovery.clusterEndpoints.writer.host` | Advanced | generated | DNS name | Explicit Writer endpoint override. |
+| `spec.discovery.clusterEndpoints.writer.port` | Advanced | `spec.discovery.port` | TCP port | Explicit Writer endpoint port override. |
+| `spec.discovery.clusterEndpoints.reader.host` | Advanced | generated | DNS name | Explicit Reader endpoint override. |
+| `spec.discovery.clusterEndpoints.reader.port` | Advanced | `spec.discovery.port` | TCP port | Explicit Reader endpoint port override. |
 | `spec.discovery.database` | No | `postgres` | database name | Database used for the discovery connection. |
 | `spec.discovery.authSecretRef.name` | Yes | none | Secret name | Operator DB credential Secret. Used for Aurora discovery, the direct DB monitor probe, and the PgBouncer path probe. |
 | `spec.discovery.interval` | No | `3s` | Go duration | Minimum interval for Aurora topology discovery checks. Internal floor `1s`. |
@@ -303,9 +311,9 @@ spec:
 
 Endpoint generation rules:
 
-- writer endpoint: `{clusterName}.cluster-{domainName}`
-- reader endpoint: `{clusterName}.cluster-ro-{domainName}`
-- instance endpoint: `{dbInstanceIdentifier}.{domainName}`
+- Writer endpoint: `{clusterName}.cluster-{domainName}`
+- Reader endpoint: `{clusterName}.cluster-ro-{domainName}`
+- Instance endpoint: `{dbInstanceIdentifier}.{domainName}`
 
 `spec.discovery.interval` defaults to `3s` to follow Aurora failover quickly. This only raises the Aurora topology query frequency. AWS RDS metadata calls for the auxiliary AZ/`DbiResourceId` data are controlled separately by `spec.discovery.metadataRefreshInterval`, which defaults to `1m`. An RDS API failure only degrades zone-aware placement and physical-identity freshness; it does not invalidate a healthy `aurora_replica_status()` topology.
 
@@ -399,10 +407,10 @@ Invalid PgBouncer config is expected to fail at PgBouncer startup, not at CR adm
 
 | Option | Required | Default | Unit | Description |
 |---|---:|---|---|---|
-| `spec.services.writer.name` | No | `writer` | DNS label suffix | Name suffix of the writer-traffic role Service. The final name is `<cr-name>-<name>`. |
+| `spec.services.writer.name` | No | `writer` | DNS label suffix | Name suffix of the Writer traffic role Service. The final name is `<cr-name>-<name>`. |
 | `spec.services.writer.type` | No | `ClusterIP` | Kubernetes Service type | Writer role Service type. One of `ClusterIP`/`NodePort`/`LoadBalancer`. |
 | `spec.services.writer.annotations` | No | `{}` | map[string]string | Writer role Service annotations. |
-| `spec.services.reader.name` | No | `reader` | DNS label suffix | Name suffix of the reader-traffic role Service. The final name is `<cr-name>-<name>`. |
+| `spec.services.reader.name` | No | `reader` | DNS label suffix | Name suffix of the Reader traffic role Service. The final name is `<cr-name>-<name>`. |
 | `spec.services.reader.type` | No | `ClusterIP` | Kubernetes Service type | Reader role Service type. One of `ClusterIP`/`NodePort`/`LoadBalancer`. |
 | `spec.services.reader.annotations` | No | `{}` | map[string]string | Reader role Service annotations. |
 | `spec.services.perInstances.type` | No | `ClusterIP` | Kubernetes Service type | Type of every per-instance PgBouncer Service. One of `ClusterIP`/`NodePort`/`LoadBalancer`. |
@@ -416,8 +424,8 @@ Because the monitor path probe and direct targeting depend on per-instance Servi
 |---|---:|---|---|---|
 | `spec.topologyPolicy.removeAfterMissingCount` | No | `3` | discovery observations | Number of consecutive trusted discovery cycles an instance must be missing before becoming a removal candidate from retained membership. |
 | `spec.topologyPolicy.removedInstanceRetention` | No | `1h` | Go duration | How long to retain a removed instance's ConfigMap/Deployment/Service before deletion. |
-| `spec.topologyPolicy.writerChangeConnectionHandling` | No | `KeepExisting` | enum | Behavior on writer membership change. One of `KeepExisting`/`RestartWriters`/`RestartAll`. |
-| `spec.topologyPolicy.readerEmptyFallback.enabled` | No | `true` | boolean | Whether to temporarily route reader Service traffic to the writer when there is no healthy reader. If off, leave the reader membership empty. |
+| `spec.topologyPolicy.writerChangeConnectionHandling` | No | `KeepExisting` | enum | Behavior on Writer membership change. One of `KeepExisting`/`RestartWriters`/`RestartAll`. |
+| `spec.topologyPolicy.readerEmptyFallback.enabled` | No | `true` | boolean | Whether to temporarily route Reader Service traffic to the Writer when there is no healthy Reader. If off, leave the Reader membership empty. |
 | `spec.topologyPolicy.zoneAware.enabled` | No | `true` | boolean | Whether to add node affinity based on the Aurora instance AZ. |
 | `spec.topologyPolicy.zoneAware.enforcement` | No | `Preferred` | enum | `Preferred` adds preferred node affinity, `Required` adds required node affinity. |
 | `spec.topologyPolicy.zoneAware.topologyKey` | No | `topology.kubernetes.io/zone` | node label key | Node label key used for zone-aware scheduling. |
@@ -462,7 +470,7 @@ These are manager process flags, not CR options.
 | `--watch-name` | `WATCH_NAME` | CR name | Optional `PgBouncerAurora` name filter. Empty/`*` watches all CRs in `--watch-namespace`; a specific name watches only that CR. |
 | `--max-concurrent-reconciles` | `1` | reconciles | Maximum concurrent `PgBouncerAurora` reconciles. |
 | `--reconcile-min-interval` | `RECONCILE_MIN_INTERVAL` or `1s` | Go duration | Minimum interval between heavy reconciles for the same CR. Event-driven reconciles within this window are throttled and requeued after the remaining time. |
-| `--resync-period` | `RESYNC_PERIOD` or `60s` | Go duration | controller-runtime cache resync period. A safety net, not the writer discovery/monitor polling mechanism. |
+| `--resync-period` | `RESYNC_PERIOD` or `60s` | Go duration | controller-runtime cache resync period. A safety net, not the Writer discovery/monitor polling mechanism. |
 | `--rds-metadata-cache-ttl` | `1m` | Go duration | Cache TTL for successful RDS DB instance metadata. |
 | `--aws-api-qps` | `AWS_API_QPS` or `2` | requests/sec | Global AWS API rate limit used by RDS metadata discovery. |
 | `--aws-api-burst` | `AWS_API_BURST` or `5` | requests | Global AWS API rate limit burst. |
@@ -513,12 +521,12 @@ The operator provides a built-in web dashboard to view runtime state at a glance
 
 What it shows:
 
-- **Top summary** — number of managed CRs, writer/reader Service member counts, and degraded/frozen CR counts.
-- **Managed CRs** — all CRs the operator watches with each one's state (Ready/Degraded/Frozen), generation, and writer/reader counts.
+- **Top summary** — number of managed CRs, Writer/Reader Service member counts, and degraded/frozen CR counts.
+- **Managed CRs** — all CRs the operator watches with each one's state (Ready/Degraded/Frozen), generation, and Writer/Reader counts.
 - **Selected CR detail**
-  - *Lifecycle* — last discovery/monitor/applied times, consecutive discovery failures, and current writer/reader members.
-  - *Services* — candidates/healthy/members/ready counts per writer/reader role Service.
-  - *Instances* — role/health/ready/AZ/`DbiResourceId`/endpoint per instance.
+  - *Lifecycle* — last discovery/monitor/applied times, consecutive discovery failures, and current Writer/Reader members.
+  - *Services* — candidates/healthy/members/ready counts per Writer/Reader role Service.
+  - *Instances* — role/health/ready/AZ/`DbiResourceId`/endpoint per Instance.
   - *Conditions* — `DiscoveryTrusted`, `MonitorSucceeded`, `Reconciled`, `Frozen`, `BackendHealthy`, `WriterReady`, `ReaderReady`, `ReaderFallback`, `Degraded`, and so on.
 
 > [!WARNING]
@@ -535,24 +543,24 @@ If an Aurora instance and the PgBouncer Pod that serves it are in different AZs,
 
 ## Writer/Reader Service membership convergence performance
 
-This operator's performance metric is "how fast an Aurora role/topology change is reflected into writer/reader Service membership." Overall failover performance cannot be described by a single number — role/topology change, Service membership update, and application query recovery are different stages.
+This operator's performance metric is "how fast an Aurora role/topology change is reflected into Writer/Reader Service membership." Overall failover performance cannot be described by a single number — role/topology change, Service membership update, and application query recovery are different stages.
 
 This operator focuses on making the Service membership update stage explicit and fast:
 
 ```text
-Aurora writer/reader role change
-→ operator discovery
-→ writer/reader Service membership update
+Aurora Writer/Reader role change
+→ Operator discovery
+→ Writer/Reader Service membership update
 → EndpointSlice update
 → PgBouncer backend reconnect
-→ application reconnect / pool recycle
+→ Application reconnect / pool recycle
 ```
 
 > These numbers are the **convergence speed** of Service membership, not a zero-downtime guarantee for already-established connections or in-flight transactions. Connection/transaction recovery is the application responsibility described in the [Scope and configuration](#scope-and-configuration-must-read) section above.
 
 In testing, the operator-managed Kubernetes Service generally converged faster, on a fresh-connection basis (each measurement opens a new connection instead of reusing an existing pooled connection), than waiting directly on the Aurora cluster endpoint, while an NLB-backed Service added target propagation time. This is expected — the internal Service path is updated via Kubernetes EndpointSlice, whereas an external NLB also depends on target health-check and deregistration behavior.
 
-For the NLB-backed measurements, the writer/reader Services were tuned with annotations that minimize NLB target deregistration and propagation latency — a short deregistration delay with connection termination on deregister, plus cross-zone balancing:
+For the NLB-backed measurements, the Writer/Reader Services were tuned with annotations that minimize NLB target deregistration and propagation latency — a short deregistration delay with connection termination on deregister, plus cross-zone balancing:
 
 ```yaml
 # spec.services.writer / spec.services.reader
@@ -573,7 +581,7 @@ In production, measure at least the following three paths separately. The intern
 | Kubernetes Service | In-cluster operator/EndpointSlice convergence. | Writer 16\~40s / Reader 0\~6s |
 | NLB | External LoadBalancer propagation and target health behavior. | Writer 25\~69s / Reader 0\~4s |
 
-Fresh-connection tests alone are not enough for application-perspective recovery. Applications using long-lived pools must be tested with an app-like reconnection flow: an existing connection fails or returns the wrong role → the pool discards it → a new connection is established → a query succeeds on the expected writer/reader role.
+Fresh-connection tests alone are not enough for application-perspective recovery. Applications using long-lived pools must be tested with an app-like reconnection flow: an existing connection fails or returns the wrong role → the pool discards it → a new connection is established → a query succeeds on the expected Writer/Reader role.
 
 In the persistent-connection test, recovery stayed close to fresh-connection behavior when fast timeouts, reconnects, and role check (`targetServerType`) were configured. The important part is that the pool fails fast, detects stale or wrong-role connections, discards them, and opens new ones.
 
@@ -583,23 +591,23 @@ Beyond failover, common operational topology-change cases were measured.
 
 | Case | Expected behavior | Observed result | Response time |
 |---|---|---|---|
-| Writer deletion + failover | Remove the old writer from the Service and switch to the new writer | The writer Service switches to the new writer, and the instance being deleted is also excluded from the reader Service | Topology event handling and Service membership apply are roughly 100–200ms. Fresh-query recovery is also affected by DB failover/backend reconnect |
-| Reader addition | Prepare the new reader resource, but do not put it into the reader Service until monitor/readiness passes | While two readers are added consecutively, they are not put in immediately but added to the reader Service in ready order | New reader discovery follows the `aurora_replica_status()` discovery cycle. Added sequentially after readiness, apply \~100–200ms |
-| Reader deletion | Exclude the deleted reader from the reader Service, and clean up per-instance resources per the retention policy | Excluded from the reader Service immediately once the discovery/missing-count policy is reflected | Excluded right after deletion detection, apply \~80ms |
-| All readers removed | Temporarily join the writer via `readerEmptyFallback` so the reader Service is not empty | Once usable readers reach 0, the reader Service is temporarily corrected to the writer instance | While reader candidates are 0, the reader Service is not emptied and points at the fallback writer. Once a real reader is ready, the fallback writer is removed |
+| Writer deletion + failover | Remove the old Writer from the Service and switch to the new Writer | The Writer Service switches to the new Writer, and the instance being deleted is also excluded from the Reader Service | Topology event handling and Service membership apply are roughly 100–200ms. Fresh-query recovery is also affected by DB failover/backend reconnect |
+| Reader addition | Prepare the new Reader resource, but do not put it into the Reader Service until monitor/readiness passes | While two Readers are added consecutively, they are not put in immediately but added to the Reader Service in ready order | New Reader discovery follows the `aurora_replica_status()` discovery cycle. Added sequentially after readiness, apply \~100–200ms |
+| Reader deletion | Exclude the deleted Reader from the Reader Service, and clean up per-instance resources per the retention policy | Excluded from the Reader Service immediately once the discovery/missing-count policy is reflected | Excluded right after deletion detection, apply \~80ms |
+| All Readers removed | Temporarily join the Writer via `readerEmptyFallback` so the Reader Service is not empty | Once usable Readers reach 0, the Reader Service is temporarily corrected to the Writer instance | While Reader candidates are 0, the Reader Service is not emptied and points at the fallback Writer. Once a real Reader is ready, the fallback Writer is removed |
 
 In these measurements too, the topology source of truth is `aurora_replica_status()`, and RDS metadata is an optional layer that enriches AZ/`DbiResourceId` only when zoneAware is on. A metadata refresh failure does not make discovery untrusted, and ordinary add/remove proceeds via the discovery/monitor policy.
 
 ## Reader Service load balancing
 
-The reader Service delegates connection distribution to the default balancing of the Kubernetes Service (kube-proxy). It is important to understand the characteristics of this distribution.
+The Reader Service delegates connection distribution to the default balancing of the Kubernetes Service (kube-proxy). It is important to understand the characteristics of this distribution.
 
-- **Distribution is random, not round-robin.** kube-proxy's default iptables mode picks a backend probabilistically at each connection-establishment time (statistic mode random). So the unit of distribution is the connection, and once established a connection is pinned to that reader instance until it closes.
-- **Small samples can skew.** Random distribution is independent trials, so with few connections (within a few multiples of the instance count) load can skew onto a particular reader. In a long-lived connection pool, this initial distribution tends to persist.
-- **In real production, however, it usually distributes evenly.** Applications typically run pools of dozens of connections per instance, with dozens to hundreds of such instances running at once. Since the total connection count comfortably exceeds the reader instance count, random distribution statistically converges to uniform.
+- **Distribution is random, not round-robin.** kube-proxy's default iptables mode picks a backend probabilistically at each connection-establishment time (statistic mode random). So the unit of distribution is the connection, and once established a connection is pinned to that Reader instance until it closes.
+- **Small samples can skew.** Random distribution is independent trials, so with few connections (within a few multiples of the instance count) load can skew onto a particular Reader. In a long-lived connection pool, this initial distribution tends to persist.
+- **In real production, however, it usually distributes evenly.** Applications typically run pools of dozens of connections per instance, with dozens to hundreds of such instances running at once. Since the total connection count comfortably exceeds the Reader instance count, random distribution statistically converges to uniform.
 - **For stricter distribution, consider IPVS mode.** Switching kube-proxy to IPVS mode lets you use the `rr` (round-robin) or `lc` (least-connection) scheduler for more even distribution even in low-connection ranges.
 
-> This distribution is per connection, not per query. This project's scope is connection distribution across reader instances; it does not provide per-query load balancing.
+> This distribution is per connection, not per query. This project's scope is connection distribution across Reader instances; it does not provide per-query load balancing.
 
 ## Resource label management
 
