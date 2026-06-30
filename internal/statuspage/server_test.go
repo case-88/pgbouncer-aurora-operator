@@ -70,7 +70,7 @@ func TestRefreshHonorsWatchName(t *testing.T) {
 	client := fake.NewClientBuilder().WithScheme(testScheme()).
 		WithObjects(statusResource("target", "Ready"), statusResource("other", "Ready")).
 		Build()
-	server := NewServer(Options{Reader: client, Namespace: "db-pgbouncer", WatchName: "target", RefreshMinInterval: 30 * time.Second})
+	server := NewServer(Options{Reader: client, Namespace: "db-pgbouncer", WatchName: "target,missing", RefreshMinInterval: 30 * time.Second})
 	if err := server.Refresh(context.Background()); err != nil {
 		t.Fatalf("refresh failed: %v", err)
 	}

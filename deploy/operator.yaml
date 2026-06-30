@@ -35,19 +35,7 @@ spec:
             - --leader-elect
             - --aws-region=ap-northeast-2
             - --watch-namespace=$(WATCH_NAMESPACE)
-            - --watch-name=$(WATCH_NAME)
-            - --max-concurrent-reconciles=1
-            - --resync-period=$(RESYNC_PERIOD)
-            - --reconcile-min-interval=$(RECONCILE_MIN_INTERVAL)
-            - --rds-metadata-cache-ttl=1m
-            - --aws-api-qps=$(AWS_API_QPS)
-            - --aws-api-burst=$(AWS_API_BURST)
-            - --db-probe-qps=$(DB_PROBE_QPS)
-            - --db-probe-burst=$(DB_PROBE_BURST)
-            - --monitor-job-timeout=$(MONITOR_JOB_TIMEOUT)
-            - --scheduler-tick=$(SCHEDULER_TICK)
-            - --discovery-workers=$(DISCOVERY_WORKERS)
-            - --monitor-workers=$(MONITOR_WORKERS)
+            - --watch-names=$(WATCH_NAMES)
             - --status-refresh-min-interval=$(STATUS_REFRESH_MIN_INTERVAL)
             - --status-recent-window=$(STATUS_RECENT_WINDOW)
           env:
@@ -55,28 +43,8 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.namespace
-            - name: WATCH_NAME
+            - name: WATCH_NAMES
               value: "*"
-            - name: RESYNC_PERIOD
-              value: "60s"
-            - name: RECONCILE_MIN_INTERVAL
-              value: "1s"
-            - name: AWS_API_QPS
-              value: "2"
-            - name: AWS_API_BURST
-              value: "5"
-            - name: DB_PROBE_QPS
-              value: "20"
-            - name: DB_PROBE_BURST
-              value: "40"
-            - name: MONITOR_JOB_TIMEOUT
-              value: "8s"
-            - name: SCHEDULER_TICK
-              value: "1s"
-            - name: DISCOVERY_WORKERS
-              value: "2"
-            - name: MONITOR_WORKERS
-              value: "4"
             - name: STATUS_REFRESH_MIN_INTERVAL
               value: "5s"
             - name: STATUS_RECENT_WINDOW
@@ -114,3 +82,24 @@ spec:
     - name: http
       port: 8080
       targetPort: metrics
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: pgbouncer-aurora-operator-status
+  namespace: pgbouncer-aurora
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: pgbouncer-aurora-operator
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector: {}
+      ports:
+        - protocol: TCP
+          port: 8080
+    - ports:
+        - protocol: TCP
+          port: 8081

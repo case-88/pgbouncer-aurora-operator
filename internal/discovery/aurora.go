@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	v1alpha1 "github.com/jongeun-lim-imweb-me/pgbouncer-aurora-operator/api/v1alpha1"
 	"github.com/jongeun-lim-imweb-me/pgbouncer-aurora-operator/internal/domain"
@@ -60,7 +61,9 @@ func (p Provider) Discover(ctx context.Context, resource *v1alpha1.PgBouncerAuro
 	metadata := map[string]InstanceMetadata{}
 	metadataErr := ""
 	if p.Metadata != nil && len(instanceNames) > 0 && zoneAwareEnabled(resource) {
-		metadata, err = p.Metadata.Resolve(ctx, resource, uniqueSorted(instanceNames))
+		metadataCtx, cancel := context.WithTimeout(ctx, metadataTimeout(resource))
+		defer cancel()
+		metadata, err = p.Metadata.Resolve(metadataCtx, resource, uniqueSorted(instanceNames))
 		if err != nil {
 			metadataErr = err.Error()
 			log.FromContext(ctx).Error(err, "rds metadata resolve failed; using aurora replica status only",
@@ -74,6 +77,10 @@ func (p Provider) Discover(ctx context.Context, resource *v1alpha1.PgBouncerAuro
 		result.Reason = fmt.Sprintf("%s; rds metadata refresh failed; using fallback", result.Reason)
 	}
 	return result, nil
+}
+
+func metadataTimeout(resource *v1alpha1.PgBouncerAurora) time.Duration {
+	return discoveryTimeout(resource)
 }
 
 func BuildResult(resource *v1alpha1.PgBouncerAurora, rows []AuroraReplicaStatusRow, metadata map[string]InstanceMetadata) domain.DiscoveryResult {

@@ -29,7 +29,7 @@ type WaitLimiter interface {
 }
 
 func (m ProbeMonitor) Check(ctx context.Context, resource *v1alpha1.PgBouncerAurora, instances []domain.InstanceObservation) (map[string]domain.HealthStatus, error) {
-	jobCtx, cancel := context.WithTimeout(ctx, m.jobTimeout())
+	jobCtx, cancel := context.WithTimeout(ctx, m.jobTimeout(resource, len(instances)))
 	defer cancel()
 	readyByInstance, err := m.readyPodsByInstance(jobCtx, resource)
 	if err != nil {
@@ -128,11 +128,17 @@ func (m ProbeMonitor) Check(ctx context.Context, resource *v1alpha1.PgBouncerAur
 	return out, nil
 }
 
-func (m ProbeMonitor) jobTimeout() time.Duration {
+func (m ProbeMonitor) jobTimeout(resource *v1alpha1.PgBouncerAurora, instanceCount int) time.Duration {
 	if m.JobTimeout > 0 {
 		return m.JobTimeout
 	}
-	return 8 * time.Second
+	timeout := monitorProbeTimeout(resource)
+	concurrency := monitorConcurrency(resource, instanceCount)
+	batches := 1
+	if instanceCount > 0 && concurrency > 0 {
+		batches = (instanceCount + concurrency - 1) / concurrency
+	}
+	return clampDuration(time.Duration(batches)*timeout+2*time.Second, 8*time.Second, 30*time.Second)
 }
 
 type probeResult struct {
@@ -142,7 +148,10 @@ type probeResult struct {
 }
 
 func monitorConcurrency(resource *v1alpha1.PgBouncerAurora, readyCount int) int {
-	limit := int(resource.Spec.Monitor.MaxConcurrency)
+	limit := 0
+	if resource != nil {
+		limit = int(resource.Spec.Monitor.MaxConcurrency)
+	}
 	if limit <= 0 {
 		limit = 4
 	}
@@ -150,6 +159,23 @@ func monitorConcurrency(resource *v1alpha1.PgBouncerAurora, readyCount int) int 
 		return readyCount
 	}
 	return limit
+}
+
+func monitorProbeTimeout(resource *v1alpha1.PgBouncerAurora) time.Duration {
+	if resource != nil && resource.Spec.Monitor.Timeout.Duration > 0 {
+		return resource.Spec.Monitor.Timeout.Duration
+	}
+	return 3 * time.Second
+}
+
+func clampDuration(value, minValue, maxValue time.Duration) time.Duration {
+	if value < minValue {
+		return minValue
+	}
+	if value > maxValue {
+		return maxValue
+	}
+	return value
 }
 
 func (m ProbeMonitor) readyPodsByInstance(ctx context.Context, resource *v1alpha1.PgBouncerAurora) (map[string]int, error) {
@@ -199,11 +225,7 @@ func (m ProbeMonitor) credentials(ctx context.Context, resource *v1alpha1.PgBoun
 func (m ProbeMonitor) checkInstance(ctx context.Context, resource *v1alpha1.PgBouncerAurora, factory postgres.DBFactory, creds postgres.Credentials, instance domain.InstanceObservation) domain.HealthStatus {
 	var probeCtx context.Context
 	var cancel context.CancelFunc
-	if timeout := resource.Spec.Monitor.Timeout.Duration; timeout > 0 {
-		probeCtx, cancel = context.WithTimeout(ctx, timeout)
-	} else {
-		probeCtx, cancel = context.WithTimeout(ctx, 3*time.Second)
-	}
+	probeCtx, cancel = context.WithTimeout(ctx, monitorProbeTimeout(resource))
 	defer cancel()
 
 	directDBProbe, pgBouncerPathProbe := enabledProbes(resource.Spec.Monitor.DirectDBProbe, resource.Spec.Monitor.PgBouncerPathProbe)

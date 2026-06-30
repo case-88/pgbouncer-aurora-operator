@@ -179,7 +179,12 @@ func TestSchedulerHonorsWatchName(t *testing.T) {
 	}
 	scheduler.enqueueDue(context.Background())
 	if len(discoveryJobs) != 0 {
-		t.Fatalf("watch-name mismatch should not enqueue discovery")
+		t.Fatalf("watch-names mismatch should not enqueue discovery")
+	}
+	scheduler.WatchName = "other,target"
+	scheduler.enqueueDue(context.Background())
+	if len(discoveryJobs) != 1 {
+		t.Fatalf("watch-names match should enqueue discovery")
 	}
 }
 
