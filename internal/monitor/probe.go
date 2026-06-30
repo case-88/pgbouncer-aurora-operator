@@ -197,8 +197,8 @@ func (m ProbeMonitor) credentials(ctx context.Context, resource *v1alpha1.PgBoun
 }
 
 func (m ProbeMonitor) checkInstance(ctx context.Context, resource *v1alpha1.PgBouncerAurora, factory postgres.DBFactory, creds postgres.Credentials, instance domain.InstanceObservation) domain.HealthStatus {
-	probeCtx := ctx
-	cancel := func() {}
+	var probeCtx context.Context
+	var cancel context.CancelFunc
 	if timeout := resource.Spec.Monitor.Timeout.Duration; timeout > 0 {
 		probeCtx, cancel = context.WithTimeout(ctx, timeout)
 	} else {
