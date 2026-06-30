@@ -1,6 +1,6 @@
 package domain
 
-import v1alpha1 "github.com/jongeun-lim-imweb-me/pgbouncer-aurora-operator/api/v1alpha1"
+import v1alpha1 "github.com/case-88/pgbouncer-aurora-operator/api/v1alpha1"
 
 type Role = v1alpha1.Role
 

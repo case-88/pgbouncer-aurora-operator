@@ -12,7 +12,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/rds/types"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	v1alpha1 "github.com/jongeun-lim-imweb-me/pgbouncer-aurora-operator/api/v1alpha1"
+	v1alpha1 "github.com/case-88/pgbouncer-aurora-operator/api/v1alpha1"
 )
 
 type fakeRDSClient struct {

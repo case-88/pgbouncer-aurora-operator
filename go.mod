@@ -1,4 +1,4 @@
-module github.com/jongeun-lim-imweb-me/pgbouncer-aurora-operator
+module github.com/case-88/pgbouncer-aurora-operator
 
 go 1.26.4
 

@@ -25,13 +25,13 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
-	v1alpha1 "github.com/jongeun-lim-imweb-me/pgbouncer-aurora-operator/api/v1alpha1"
-	"github.com/jongeun-lim-imweb-me/pgbouncer-aurora-operator/internal/controller"
-	auroradiscovery "github.com/jongeun-lim-imweb-me/pgbouncer-aurora-operator/internal/discovery"
-	pgmonitor "github.com/jongeun-lim-imweb-me/pgbouncer-aurora-operator/internal/monitor"
-	"github.com/jongeun-lim-imweb-me/pgbouncer-aurora-operator/internal/postgres"
-	"github.com/jongeun-lim-imweb-me/pgbouncer-aurora-operator/internal/render"
-	"github.com/jongeun-lim-imweb-me/pgbouncer-aurora-operator/internal/statuspage"
+	v1alpha1 "github.com/case-88/pgbouncer-aurora-operator/api/v1alpha1"
+	"github.com/case-88/pgbouncer-aurora-operator/internal/controller"
+	auroradiscovery "github.com/case-88/pgbouncer-aurora-operator/internal/discovery"
+	pgmonitor "github.com/case-88/pgbouncer-aurora-operator/internal/monitor"
+	"github.com/case-88/pgbouncer-aurora-operator/internal/postgres"
+	"github.com/case-88/pgbouncer-aurora-operator/internal/render"
+	"github.com/case-88/pgbouncer-aurora-operator/internal/statuspage"
 )
 
 var scheme = runtime.NewScheme()
