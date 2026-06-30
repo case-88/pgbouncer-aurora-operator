@@ -3,36 +3,98 @@ kind: PgBouncerAurora
 metadata:
   name: example-pg
 spec:
+  # Discovery is the source of truth for Aurora topology and role changes.
+  # One PgBouncerAurora custom resource manages one Aurora PostgreSQL cluster.
   discovery:
+    # Aurora DB cluster identifier. The operator uses this value to generate
+    # the cluster Writer/Reader endpoints below unless clusterEndpoints is set.
+    #
+    # Writer endpoint: <clusterName>.cluster-<domainName>
+    # Reader endpoint: <clusterName>.cluster-ro-<domainName>
     clusterName: example-pg
+
+    # Common Aurora endpoint suffix, without the instance or cluster prefix.
+    # Instance endpoints are generated as <dbInstanceIdentifier>.<domainName>.
     domainName: xxxx.ap-northeast-2.rds.amazonaws.com
+
+    # Port used for generated cluster and instance endpoints.
     port: 5432
+
+    # Database used by discovery and monitor probe connections.
     database: postgres
+
+    # DB credentials used for Aurora discovery, direct DB monitor probes, and
+    # PgBouncer path probes. The same user must also exist in userlist.txt when
+    # monitor.pgbouncerPathProbe is enabled.
     authSecretRef:
       name: pgbouncer-operator-db-auth
+
+    # Minimum interval for aurora_replica_status() topology checks.
     interval: 3s
+
+    # RDS metadata refresh interval for zone-aware AZ and DbiResourceId data.
+    # This is intentionally separate from the topology discovery interval.
     metadataRefreshInterval: 1m
+
+    # Timeout for discovery DB queries. RDS metadata refresh uses the same
+    # timeout budget.
     timeout: 3s
+
+    # Consecutive untrusted discovery results allowed before freezing instead
+    # of applying a possibly unsafe topology change.
     failureThreshold: 3
 
+  # Monitor checks whether discovered backends are safe to put into traffic.
+  # Discovery decides roles; monitor verifies health and role sanity.
   monitor:
+    # Minimum interval for backend health checks.
     interval: 10s
+
+    # Timeout per backend probe.
     timeout: 3s
+
+    # Consecutive failures before treating a previously healthy backend as
+    # unhealthy.
     failureThreshold: 3
+
+    # Consecutive successes before treating a previously unhealthy backend as
+    # healthy again.
     recoveryThreshold: 2
+
+    # Maximum number of backend probes running concurrently per CR.
     maxConcurrency: 4
+
+    # Direct probe connects to each Aurora instance and checks health/role.
     directDBProbe: true
+
+    # PgBouncer path probe verifies the in-cluster path through the per-instance
+    # PgBouncer Service. It uses sslmode=disable and the reserved database alias
+    # pgbouncer_aurora_probe when enabled.
     pgbouncerPathProbe: true
+
+    # SSL mode used only by the direct Aurora instance probe. If unset, the
+    # discovery Secret's sslmode value is used.
     directDBSSLMode: require
 
   pgbouncer:
+    # PgBouncer image is intentionally user supplied. This project publishes
+    # the operator image only, not a bundled PgBouncer image.
     image: db/pgbouncer:1.25.2
+
+    # Default replica count for every per-instance PgBouncer Deployment.
     replicas: 1
+
+    # Structured PgBouncer ini config. Unknown keys are rendered as-is and are
+    # validated by PgBouncer at startup, not by the operator.
     config:
       pgbouncer:
+        # auth_file, listen_addr, listen_port, and pidfile can be overridden.
+        # The userlist Secret is mounted at the effective auth_file path.
         auth_file: /etc/pgbouncer/userlist.txt
         listen_addr: 0.0.0.0
         pidfile: /tmp/pgbouncer.pid
+
+        # listen_port is also used for generated Services and default probes.
         listen_port: "6432"
         pool_mode: transaction
         max_client_conn: "8000"
@@ -41,10 +103,15 @@ spec:
         server_lifetime: "3600"
         dns_max_ttl: "15"
       databases:
+        # The operator always renders host/port for each discovered Aurora
+        # instance. User-provided host/port values are ignored.
         "*":
           user: svc
       users: {}
       peers: {}
+
+    # Per Aurora instance override. name must match server_id from
+    # aurora_replica_status(). config is deep-merged over the common config.
     instanceOverrides:
       - name: example-pg-instance-1
         replicas: 2
@@ -54,8 +121,12 @@ spec:
           databases:
             "*":
               pool_size: "100"
+
+    # Secret containing userlist.txt. The discovery user must also be present
+    # here when monitor.pgbouncerPathProbe is enabled.
     authFileSecretRef:
       name: pgbouncer-userlist
+
     labels: {}
     annotations: {}
     resources: {}
@@ -83,28 +154,59 @@ spec:
       - name: tmp
         mountPath: /tmp
     imagePullSecrets: []
+
+    # Use native Kubernetes topology spread for multiple PgBouncer replicas.
+    # Zone-aware backend placement is controlled separately by topologyPolicy.
     topologySpreadConstraints: []
 
+  # Writer and Reader role Services are always managed. Per-instance Services
+  # are always created for discovered instances because monitor path probes and
+  # direct per-instance targeting depend on them.
   services:
     writer:
+      # Final Service name is <cr-name>-<name>.
       name: writer
-      enabled: true
       type: ClusterIP
     reader:
+      # Final Service name is <cr-name>-<name>.
       name: reader
-      enabled: true
       type: ClusterIP
     perInstances:
       type: ClusterIP
       
+  # Topology policy controls how aggressively the operator changes traffic
+  # membership when topology, health, or scheduling metadata changes.
   topologyPolicy:
+    # A discovered instance must be missing this many consecutive trusted
+    # discovery cycles before it becomes a removal candidate.
     removeAfterMissingCount: 3
+
+    # Retain removed per-instance resources for this duration before cleanup.
     removedInstanceRetention: 1h
+
+    # Writer membership change handling:
+    # - KeepExisting: do not restart PgBouncer Deployments.
+    # - RestartWriters: restart Writer members on Writer changes.
+    # - RestartAll: restart all managed PgBouncer Deployments on Writer changes.
     writerChangeConnectionHandling: KeepExisting
+
+    # If no healthy Reader is available, temporarily route Reader Service
+    # traffic to the Writer. If disabled, the Reader Service remains but has no
+    # traffic members.
     readerEmptyFallback:
       enabled: true
+
+    # Zone-aware placement uses RDS metadata only to add Aurora instance AZ
+    # affinity. Aurora SQL discovery remains the role/topology source of truth.
     zoneAware:
       enabled: true
+
+      # Preferred adds preferred node affinity. Required adds required affinity
+      # and may leave Pods Pending if no node is available in the target AZ.
       enforcement: Preferred
+
       topologyKey: topology.kubernetes.io/zone
+
+      # Warn records a ZoneAwareConflict condition and continues. Fail freezes
+      # reconcile for safety. Ignore hides the conflict condition.
       conflictPolicy: Warn
