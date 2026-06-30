@@ -100,7 +100,7 @@ func main() {
 
 	ctrl.SetLogger(zap.New(zap.UseDevMode(zapDevel)))
 	watchNamespace = effectiveWatchNamespace(watchNamespace)
-	watchTarget := effectiveWatchNames(watchNames.String())
+	watchTarget := effectiveWatchNames(watchNames.String(), watchNames.IsSet())
 	if err := validateWatchNamespace(watchNamespace); err != nil {
 		ctrl.Log.Error(err, "invalid watch namespace")
 		os.Exit(1)
@@ -281,27 +281,34 @@ func effectiveWatchNamespace(flagValue string) string {
 	return strings.TrimSpace(os.Getenv("WATCH_NAMESPACE"))
 }
 
-func effectiveWatchNames(flagValue string) string {
-	for _, value := range []string{
-		flagValue,
-		os.Getenv("WATCH_NAMES"),
-	} {
-		if names := normalizeWatchNames(value); names != "" {
+func effectiveWatchNames(flagValue string, flagSet bool) string {
+	if flagSet {
+		if names := normalizeWatchNames(flagValue); names != "" {
 			return names
 		}
+		return "*"
+	}
+	if names := normalizeWatchNames(os.Getenv("WATCH_NAMES")); names != "" {
+		return names
 	}
 	return "*"
 }
 
 type watchNameListFlag struct {
 	values []string
+	set    bool
 }
 
 func (f *watchNameListFlag) String() string {
 	return normalizeWatchNames(strings.Join(f.values, ","))
 }
 
+func (f *watchNameListFlag) IsSet() bool {
+	return f.set
+}
+
 func (f *watchNameListFlag) Set(value string) error {
+	f.set = true
 	merged := normalizeWatchNames(strings.Join([]string{f.String(), value}, ","))
 	if merged == "" {
 		f.values = nil
