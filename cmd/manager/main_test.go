@@ -39,17 +39,20 @@ func TestEffectiveWatchNamespacePrefersFlagThenEnv(t *testing.T) {
 
 func TestEffectiveWatchNamesPrefersFlagsThenEnv(t *testing.T) {
 	t.Setenv("WATCH_NAMES", "env-a, env-b")
-	if got := effectiveWatchNames(" flag-a, flag-b "); got != "flag-a,flag-b" {
+	if got := effectiveWatchNames(" flag-a, flag-b ", true); got != "flag-a,flag-b" {
 		t.Fatalf("watch-names flag should win: %q", got)
 	}
-	if got := effectiveWatchNames(""); got != "env-a,env-b" {
+	if got := effectiveWatchNames("", true); got != "*" {
+		t.Fatalf("explicit empty watch-names flag should watch all: %q", got)
+	}
+	if got := effectiveWatchNames("", false); got != "env-a,env-b" {
 		t.Fatalf("WATCH_NAMES env should be used: %q", got)
 	}
 	t.Setenv("WATCH_NAMES", "")
-	if got := effectiveWatchNames(""); got != "*" {
+	if got := effectiveWatchNames("", false); got != "*" {
 		t.Fatalf("empty watch names should watch all: %q", got)
 	}
-	if got := effectiveWatchNames(" * "); got != "*" {
+	if got := effectiveWatchNames(" * ", true); got != "*" {
 		t.Fatalf("star should be preserved: %q", got)
 	}
 }
@@ -68,6 +71,9 @@ func TestWatchNameListFlagAppendsRepeatedValues(t *testing.T) {
 	if err := flag.Set("db-a, db-b"); err != nil {
 		t.Fatal(err)
 	}
+	if !flag.IsSet() {
+		t.Fatal("watch names flag should be marked as set")
+	}
 	if err := flag.Set("db-c"); err != nil {
 		t.Fatal(err)
 	}
@@ -79,6 +85,20 @@ func TestWatchNameListFlagAppendsRepeatedValues(t *testing.T) {
 	}
 	if got := flag.String(); got != "*" {
 		t.Fatalf("star should replace watch names: %q", got)
+	}
+}
+
+func TestWatchNameListFlagExplicitEmptyOverridesEnv(t *testing.T) {
+	t.Setenv("WATCH_NAMES", "env-a")
+	var flag watchNameListFlag
+	if err := flag.Set(""); err != nil {
+		t.Fatal(err)
+	}
+	if !flag.IsSet() {
+		t.Fatal("empty watch names flag should be marked as set")
+	}
+	if got := effectiveWatchNames(flag.String(), flag.IsSet()); got != "*" {
+		t.Fatalf("explicit empty watch names should watch all: %q", got)
 	}
 }
 
