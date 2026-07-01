@@ -1468,7 +1468,7 @@ func TestReconcileTracksMissingInstanceAndRetainsResources(t *testing.T) {
 	}
 }
 
-func TestReconcileFastRemovesRDSDeletingInstanceFromMembership(t *testing.T) {
+func TestReconcilePreservesMissingInstanceBeforeRemoveThreshold(t *testing.T) {
 	ctx := context.Background()
 	scheme := testScheme(t)
 	resource := sampleResource()
@@ -1491,8 +1491,7 @@ func TestReconcileFastRemovesRDSDeletingInstanceFromMembership(t *testing.T) {
 		Client: client,
 		Scheme: scheme,
 		Discovery: fakeDiscovery{result: domain.DiscoveryResult{
-			Trusted:           true,
-			RemovingInstances: []string{"db-old"},
+			Trusted: true,
 			Instances: []domain.InstanceObservation{{
 				Name: "db-1", Endpoint: "db-1.example", Port: 5432, Role: domain.RoleWriter,
 			}},
@@ -1511,15 +1510,15 @@ func TestReconcileFastRemovesRDSDeletingInstanceFromMembership(t *testing.T) {
 	}
 	if len(updated.Status.MissingInstances) != 1 ||
 		updated.Status.MissingInstances[0].InstanceName != "db-old" ||
-		updated.Status.MissingInstances[0].MissingCount != 3 {
-		t.Fatalf("fast removed missing instance status mismatch: %#v", updated.Status.MissingInstances)
+		updated.Status.MissingInstances[0].MissingCount != 1 {
+		t.Fatalf("missing instance status should follow removeAfterMissingCount flow: %#v", updated.Status.MissingInstances)
 	}
 	updatedPod := &corev1.Pod{}
 	if err := client.Get(ctx, types.NamespacedName{Name: "old-pod", Namespace: resource.Namespace}, updatedPod); err != nil {
 		t.Fatal(err)
 	}
-	if updatedPod.Labels[render.LabelReader] == "true" {
-		t.Fatalf("deleting reader label should be removed immediately: %#v", updatedPod.Labels)
+	if updatedPod.Labels[render.LabelReader] != "true" {
+		t.Fatalf("missing reader label should be preserved before threshold: %#v", updatedPod.Labels)
 	}
 }
 

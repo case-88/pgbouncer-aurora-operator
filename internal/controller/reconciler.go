@@ -1917,7 +1917,6 @@ func missingInstancesFor(resource *v1alpha1.PgBouncerAurora, discovery domain.Di
 	current := discoveredInstanceSet(discovery.Instances)
 	existing := map[string]v1alpha1.MissingInstanceStatus{}
 	candidates := map[string]bool{}
-	fastRemove := stringSet(discovery.RemovingInstances)
 	for _, missing := range resource.Status.MissingInstances {
 		if missing.InstanceName == "" || current[missing.InstanceName] {
 			continue
@@ -1943,9 +1942,6 @@ func missingInstancesFor(resource *v1alpha1.PgBouncerAurora, discovery domain.Di
 		item := existing[name]
 		item.InstanceName = name
 		item.MissingCount++
-		if fastRemove[name] && item.MissingCount < removeAfterMissingCount(resource) {
-			item.MissingCount = removeAfterMissingCount(resource)
-		}
 		if item.FirstMissingTime == nil {
 			item.FirstMissingTime = cloneTime(now)
 		}

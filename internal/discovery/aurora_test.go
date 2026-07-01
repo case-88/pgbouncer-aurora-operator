@@ -198,7 +198,7 @@ func TestBuildResultIgnoresCreatingStatus(t *testing.T) {
 	}
 }
 
-func TestBuildResultExcludesDeletingReaderFromSQLDiscoveredInstances(t *testing.T) {
+func TestBuildResultKeepsDeletingReaderFromSQLDiscoveredInstances(t *testing.T) {
 	resource := sampleResource()
 	resource.Status.LastKnownTopology.Instances = []v1alpha1.InstanceTopologyStatus{
 		{InstanceName: "db-1", Endpoint: "db-1.example", Role: domain.RoleWriter},
@@ -213,12 +213,10 @@ func TestBuildResultExcludesDeletingReaderFromSQLDiscoveredInstances(t *testing.
 	if !result.Trusted {
 		t.Fatalf("metadata must not make discovery untrusted: %#v", result)
 	}
-	if len(result.Instances) != 1 || result.Instances[0].Name != "db-1" {
-		t.Fatalf("deleting SQL-discovered reader must be excluded from topology: %#v", result.Instances)
+	if len(result.Instances) != 2 {
+		t.Fatalf("deleting metadata must not exclude SQL-discovered instances: %#v", result.Instances)
 	}
-	if len(result.RemovingInstances) != 1 || result.RemovingInstances[0] != "db-2" {
-		t.Fatalf("removing instances mismatch: %#v", result.RemovingInstances)
-	}
+	assertObservation(t, result.Instances, "db-2", domain.RoleReader, "db-2.example", 5432, "ap-northeast-2c")
 }
 
 func TestBuildResultIgnoresMetadataOnlyInstance(t *testing.T) {
@@ -301,7 +299,7 @@ func TestProviderResolvesUniqueSortedMetadata(t *testing.T) {
 	}
 }
 
-func TestProviderResolvesMetadataWhenZoneAwareDisabled(t *testing.T) {
+func TestProviderIgnoresMetadataStatusWhenZoneAwareDisabled(t *testing.T) {
 	resource := sampleResource()
 	resource.Spec.TopologyPolicy.ZoneAware.Enabled = boolPtr(false)
 	metadata := sampleMetadata()
@@ -321,10 +319,8 @@ func TestProviderResolvesMetadataWhenZoneAwareDisabled(t *testing.T) {
 	if !reflect.DeepEqual(resolver.seen, []string{"db-1", "db-2"}) {
 		t.Fatalf("resolved names = %#v", resolver.seen)
 	}
-	if len(result.RemovingInstances) != 1 || result.RemovingInstances[0] != "db-2" {
-		t.Fatalf("metadata status should be used without zoneAware: %#v", result.RemovingInstances)
-	}
 	assertObservation(t, result.Instances, "db-1", domain.RoleWriter, "db-1.example", 5432, "ap-northeast-2a")
+	assertObservation(t, result.Instances, "db-2", domain.RoleReader, "db-2.example", 5432, "ap-northeast-2c")
 }
 
 func TestProviderUsesDiscoveryTimeoutForMetadataResolve(t *testing.T) {
