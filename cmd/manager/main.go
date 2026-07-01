@@ -291,11 +291,7 @@ func newKubernetesAPIClientFunc(timeout time.Duration) client.NewClientFunc {
 }
 
 func newKubernetesAPIReader(config *rest.Config, options client.Options, timeout time.Duration) (client.Reader, error) {
-	config, options, err := clientOptionsWithKubernetesAPITimeout(config, options, timeout)
-	if err != nil {
-		return nil, err
-	}
-	return client.New(config, options)
+	return newKubernetesAPIClientFunc(timeout)(config, options)
 }
 
 func clientOptionsWithKubernetesAPITimeout(config *rest.Config, options client.Options, timeout time.Duration) (*rest.Config, client.Options, error) {
