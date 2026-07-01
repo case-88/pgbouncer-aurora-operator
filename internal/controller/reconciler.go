@@ -946,9 +946,7 @@ func (r *PgBouncerAuroraReconciler) podMembershipLabelDrifted(ctx context.Contex
 		if instanceName == "" {
 			continue
 		}
-		if pod.Labels[render.LabelWriter] != boolLabel(writer[instanceName]) ||
-			pod.Labels[render.LabelReader] != boolLabel(reader[instanceName]) ||
-			pod.Labels[render.LabelRole] != string(roles[instanceName]) {
+		if !membershipLabelsExact(pod.Labels, writer[instanceName], reader[instanceName], roles[instanceName]) {
 			return true, nil
 		}
 	}
@@ -1816,7 +1814,8 @@ func (r *PgBouncerAuroraReconciler) patchPodMembershipAdditions(
 			patched.Labels[render.LabelRole] = string(desiredRole)
 		}
 		if err := r.Patch(ctx, patched, client.MergeFrom(current)); err != nil {
-			return err
+			updated = nil
+			return client.IgnoreNotFound(err)
 		}
 		updated = patched
 		return nil
@@ -1841,9 +1840,7 @@ func (r *PgBouncerAuroraReconciler) patchPodMembershipExact(
 		desiredWriter := writer[instanceName]
 		desiredReader := reader[instanceName]
 		desiredRole := roles[instanceName]
-		if current.Labels[render.LabelWriter] == boolLabel(desiredWriter) &&
-			current.Labels[render.LabelReader] == boolLabel(desiredReader) &&
-			current.Labels[render.LabelRole] == string(desiredRole) {
+		if membershipLabelsExact(current.Labels, desiredWriter, desiredReader, desiredRole) {
 			return nil
 		}
 		patched := current.DeepCopy()
@@ -1857,8 +1854,30 @@ func (r *PgBouncerAuroraReconciler) patchPodMembershipExact(
 		} else {
 			delete(patched.Labels, render.LabelRole)
 		}
-		return r.Patch(ctx, patched, client.MergeFrom(current))
+		return client.IgnoreNotFound(r.Patch(ctx, patched, client.MergeFrom(current)))
 	})
+}
+
+func membershipLabelsExact(labels map[string]string, desiredWriter bool, desiredReader bool, desiredRole v1alpha1.Role) bool {
+	return boolMembershipLabelExact(labels, render.LabelWriter, desiredWriter) &&
+		boolMembershipLabelExact(labels, render.LabelReader, desiredReader) &&
+		roleMembershipLabelExact(labels, desiredRole)
+}
+
+func boolMembershipLabelExact(labels map[string]string, key string, desired bool) bool {
+	value, exists := labels[key]
+	if desired {
+		return exists && value == "true"
+	}
+	return !exists
+}
+
+func roleMembershipLabelExact(labels map[string]string, desired v1alpha1.Role) bool {
+	value, exists := labels[render.LabelRole]
+	if desired != "" {
+		return exists && value == string(desired)
+	}
+	return !exists
 }
 
 func instanceRoleSet(instances []domain.InstancePlan) map[string]v1alpha1.Role {

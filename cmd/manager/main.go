@@ -159,7 +159,7 @@ func main() {
 		RecentWindow:       statusRecentWindow,
 		Log:                ctrl.Log.WithName("status"),
 	})
-	kubernetesConfig := applyKubernetesAPITimeout(ctrl.GetConfigOrDie(), kubernetesAPITimeout)
+	kubernetesConfig := ctrl.GetConfigOrDie()
 
 	mgr, err := ctrl.NewManager(kubernetesConfig, ctrl.Options{
 		Scheme:                 scheme,
@@ -171,12 +171,21 @@ func main() {
 		Client: client.Options{Cache: &client.CacheOptions{
 			DisableFor: []client.Object{&corev1.Secret{}},
 		}},
+		NewClient: newKubernetesAPIClientFunc(kubernetesAPITimeout),
 	})
 	if err != nil {
 		ctrl.Log.Error(err, "unable to start manager")
 		os.Exit(1)
 	}
 	statusServer.SetReader(mgr.GetClient())
+	kubernetesAPIReader, err := newKubernetesAPIReader(kubernetesConfig, client.Options{
+		Scheme: mgr.GetScheme(),
+		Mapper: mgr.GetRESTMapper(),
+	}, kubernetesAPITimeout)
+	if err != nil {
+		ctrl.Log.Error(err, "unable to create Kubernetes API reader")
+		os.Exit(1)
+	}
 
 	metadataResolver, err := auroradiscovery.NewRDSMetadataResolver(context.Background(), awsRegion)
 	if err != nil {
@@ -194,7 +203,7 @@ func main() {
 	scheduleEvents := make(chan event.GenericEvent, 1024)
 	reconciler := &controller.PgBouncerAuroraReconciler{
 		Client:    mgr.GetClient(),
-		APIReader: mgr.GetAPIReader(),
+		APIReader: kubernetesAPIReader,
 		Scheme:    mgr.GetScheme(),
 		Discovery: auroradiscovery.Provider{
 			Rows:     auroradiscovery.KubernetesRowSource{Client: mgr.GetClient(), DBFactory: dbFactory},
@@ -212,7 +221,7 @@ func main() {
 	}
 	if err := mgr.Add(&controller.Scheduler{
 		Client:    mgr.GetClient(),
-		APIReader: mgr.GetAPIReader(),
+		APIReader: kubernetesAPIReader,
 		Discovery: reconciler.Discovery,
 		Monitor:   reconciler.Monitor,
 		Events:    scheduleEvents,
@@ -271,11 +280,44 @@ func managerCacheOptions(watchNamespace string, resyncPeriod time.Duration) cach
 	return options
 }
 
-func applyKubernetesAPITimeout(config *rest.Config, timeout time.Duration) *rest.Config {
-	if config != nil && timeout > 0 {
-		config.Timeout = timeout
+func newKubernetesAPIClientFunc(timeout time.Duration) client.NewClientFunc {
+	return func(config *rest.Config, options client.Options) (client.Client, error) {
+		config, options, err := clientOptionsWithKubernetesAPITimeout(config, options, timeout)
+		if err != nil {
+			return nil, err
+		}
+		return client.New(config, options)
 	}
-	return config
+}
+
+func newKubernetesAPIReader(config *rest.Config, options client.Options, timeout time.Duration) (client.Reader, error) {
+	config, options, err := clientOptionsWithKubernetesAPITimeout(config, options, timeout)
+	if err != nil {
+		return nil, err
+	}
+	return client.New(config, options)
+}
+
+func clientOptionsWithKubernetesAPITimeout(config *rest.Config, options client.Options, timeout time.Duration) (*rest.Config, client.Options, error) {
+	config = kubernetesAPITimeoutConfig(config, timeout)
+	if timeout <= 0 {
+		return config, options, nil
+	}
+	httpClient, err := rest.HTTPClientFor(config)
+	if err != nil {
+		return nil, options, err
+	}
+	options.HTTPClient = httpClient
+	return config, options, nil
+}
+
+func kubernetesAPITimeoutConfig(config *rest.Config, timeout time.Duration) *rest.Config {
+	if config == nil || timeout <= 0 {
+		return config
+	}
+	copied := rest.CopyConfig(config)
+	copied.Timeout = timeout
+	return copied
 }
 
 func effectiveWatchNamespace(flagValue string) string {

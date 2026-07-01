@@ -619,6 +619,101 @@ func TestPatchPodMembershipRetriesConflict(t *testing.T) {
 	}
 }
 
+func TestPatchPodMembershipIgnoresNotFoundDuringPatch(t *testing.T) {
+	ctx := context.Background()
+	scheme := testScheme(t)
+	resource := sampleResource()
+
+	t.Run("additions pass", func(t *testing.T) {
+		pod := readyManagedPod(resource, "reader", "db-1")
+		patchCount := 0
+		k8sClient := fake.NewClientBuilder().
+			WithScheme(scheme).
+			WithObjects(resource, pod).
+			WithInterceptorFuncs(interceptor.Funcs{
+				Patch: func(ctx context.Context, c client.WithWatch, obj client.Object, patch client.Patch, opts ...client.PatchOption) error {
+					patchCount++
+					return apierrors.NewNotFound(schema.GroupResource{Resource: "pods"}, obj.GetName())
+				},
+			}).
+			Build()
+		reconciler := &PgBouncerAuroraReconciler{Client: k8sClient, Scheme: scheme}
+		plan := planner.Output{
+			Instances: []domain.InstancePlan{{
+				InstanceObservation: domain.InstanceObservation{Name: "db-1", Role: v1alpha1.RoleWriter},
+			}},
+			Membership: domain.ServiceMembership{Writer: []string{"db-1"}},
+		}
+
+		if err := reconciler.patchPodMembership(ctx, resource, plan); err != nil {
+			t.Fatal(err)
+		}
+		if patchCount != 1 {
+			t.Fatalf("patch count = %d", patchCount)
+		}
+	})
+
+	t.Run("exact pass", func(t *testing.T) {
+		pod := readyManagedPod(resource, "writer", "db-1")
+		pod.Labels[render.LabelWriter] = "true"
+		pod.Labels[render.LabelReader] = ""
+		pod.Labels[render.LabelRole] = string(v1alpha1.RoleWriter)
+		patchCount := 0
+		k8sClient := fake.NewClientBuilder().
+			WithScheme(scheme).
+			WithObjects(resource, pod).
+			WithInterceptorFuncs(interceptor.Funcs{
+				Patch: func(ctx context.Context, c client.WithWatch, obj client.Object, patch client.Patch, opts ...client.PatchOption) error {
+					patchCount++
+					return apierrors.NewNotFound(schema.GroupResource{Resource: "pods"}, obj.GetName())
+				},
+			}).
+			Build()
+		reconciler := &PgBouncerAuroraReconciler{Client: k8sClient, Scheme: scheme}
+		plan := planner.Output{
+			Instances: []domain.InstancePlan{{
+				InstanceObservation: domain.InstanceObservation{Name: "db-1", Role: v1alpha1.RoleWriter},
+			}},
+			Membership: domain.ServiceMembership{Writer: []string{"db-1"}},
+		}
+
+		if err := reconciler.patchPodMembership(ctx, resource, plan); err != nil {
+			t.Fatal(err)
+		}
+		if patchCount != 1 {
+			t.Fatalf("patch count = %d", patchCount)
+		}
+	})
+}
+
+func TestPatchPodMembershipRemovesPresentEmptyLabels(t *testing.T) {
+	ctx := context.Background()
+	scheme := testScheme(t)
+	resource := sampleResource()
+	pod := readyManagedPod(resource, "pod-db-1", "db-1")
+	pod.Labels[render.LabelWriter] = ""
+	pod.Labels[render.LabelReader] = ""
+	pod.Labels[render.LabelRole] = ""
+	k8sClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(resource, pod).Build()
+	reconciler := &PgBouncerAuroraReconciler{Client: k8sClient, Scheme: scheme}
+	plan := planner.Output{Instances: []domain.InstancePlan{{
+		InstanceObservation: domain.InstanceObservation{Name: "db-1"},
+	}}}
+
+	if err := reconciler.patchPodMembership(ctx, resource, plan); err != nil {
+		t.Fatal(err)
+	}
+	updated := &corev1.Pod{}
+	if err := k8sClient.Get(ctx, types.NamespacedName{Name: pod.Name, Namespace: pod.Namespace}, updated); err != nil {
+		t.Fatal(err)
+	}
+	for _, label := range []string{render.LabelWriter, render.LabelReader, render.LabelRole} {
+		if _, ok := updated.Labels[label]; ok {
+			t.Fatalf("empty membership label %q should be removed: %#v", label, updated.Labels)
+		}
+	}
+}
+
 func TestUpdateStatusRetriesConflict(t *testing.T) {
 	ctx := context.Background()
 	scheme := testScheme(t)

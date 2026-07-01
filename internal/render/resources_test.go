@@ -271,7 +271,7 @@ func TestInstanceDeploymentAuthFileHashUsesInputWhenProvided(t *testing.T) {
 
 	first := InstanceDeployment(InstanceRenderInput{Owner: owner, Instance: instance, AuthFileHash: "secret-metadata-token"})
 	firstHash := first.Spec.Template.Annotations[AnnotationAuthFileHash]
-	if firstHash != "secret-metadata-token" || first.ObjectMeta.Annotations[AnnotationAuthFileHash] != firstHash {
+	if firstHash != "secret-metadata-token" || first.Annotations[AnnotationAuthFileHash] != firstHash {
 		t.Fatalf("auth ref hash annotation missing: object=%#v template=%#v", first.ObjectMeta.Annotations, first.Spec.Template.Annotations)
 	}
 }

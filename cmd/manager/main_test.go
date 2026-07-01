@@ -1,6 +1,7 @@
 package main
 
 import (
+	"net/http"
 	"testing"
 	"time"
 
@@ -28,17 +29,48 @@ func TestManagerCacheOptionsRestrictsNamespace(t *testing.T) {
 	}
 }
 
-func TestApplyKubernetesAPITimeout(t *testing.T) {
-	config := &rest.Config{}
-	if got := applyKubernetesAPITimeout(config, 10*time.Second); got != config {
-		t.Fatalf("config pointer should be preserved")
+func TestKubernetesAPITimeoutConfigCopiesConfig(t *testing.T) {
+	config := &rest.Config{Host: "https://kubernetes.example"}
+	got := kubernetesAPITimeoutConfig(config, 10*time.Second)
+	if got == config {
+		t.Fatalf("timeout config should be copied")
 	}
-	if config.Timeout != 10*time.Second {
-		t.Fatalf("timeout mismatch: %s", config.Timeout)
+	if config.Timeout != 0 {
+		t.Fatalf("original manager config should not be mutated: %s", config.Timeout)
 	}
-	applyKubernetesAPITimeout(config, 0)
-	if config.Timeout != 10*time.Second {
-		t.Fatalf("non-positive timeout should not clear existing timeout: %s", config.Timeout)
+	if got.Timeout != 10*time.Second || got.Host != config.Host {
+		t.Fatalf("timeout config mismatch: %#v", got)
+	}
+	if got := kubernetesAPITimeoutConfig(config, 0); got != config {
+		t.Fatalf("non-positive timeout should preserve original config")
+	}
+}
+
+func TestClientOptionsWithKubernetesAPITimeoutUsesDedicatedHTTPClient(t *testing.T) {
+	config := &rest.Config{Host: "https://kubernetes.example"}
+	existingHTTPClient := &http.Client{Timeout: time.Minute}
+	gotConfig, gotOptions, err := clientOptionsWithKubernetesAPITimeout(config, client.Options{HTTPClient: existingHTTPClient}, 10*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotConfig == config {
+		t.Fatalf("client config should be copied")
+	}
+	if config.Timeout != 0 {
+		t.Fatalf("original manager config should not be mutated: %s", config.Timeout)
+	}
+	if gotConfig.Timeout != 10*time.Second {
+		t.Fatalf("client config timeout mismatch: %s", gotConfig.Timeout)
+	}
+	if gotOptions.HTTPClient == nil || gotOptions.HTTPClient == existingHTTPClient || gotOptions.HTTPClient.Timeout != 10*time.Second {
+		t.Fatalf("dedicated HTTP client timeout mismatch: %#v", gotOptions.HTTPClient)
+	}
+	gotConfig, gotOptions, err = clientOptionsWithKubernetesAPITimeout(config, client.Options{HTTPClient: existingHTTPClient}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotConfig != config || gotOptions.HTTPClient != existingHTTPClient {
+		t.Fatalf("non-positive timeout should preserve inputs")
 	}
 }
 
