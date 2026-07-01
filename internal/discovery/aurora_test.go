@@ -301,6 +301,32 @@ func TestProviderResolvesUniqueSortedMetadata(t *testing.T) {
 	}
 }
 
+func TestProviderResolvesMetadataWhenZoneAwareDisabled(t *testing.T) {
+	resource := sampleResource()
+	resource.Spec.TopologyPolicy.ZoneAware.Enabled = boolPtr(false)
+	metadata := sampleMetadata()
+	meta := metadata["db-2"]
+	meta.Status = "deleting"
+	metadata["db-2"] = meta
+	resolver := &fakeMetadataResolver{metadata: metadata}
+	provider := Provider{Rows: fakeRowsSource{rows: sampleRows()}, Metadata: resolver}
+
+	result, err := provider.Discover(context.Background(), resource)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Trusted {
+		t.Fatalf("result = %#v", result)
+	}
+	if !reflect.DeepEqual(resolver.seen, []string{"db-1", "db-2"}) {
+		t.Fatalf("resolved names = %#v", resolver.seen)
+	}
+	if len(result.RemovingInstances) != 1 || result.RemovingInstances[0] != "db-2" {
+		t.Fatalf("metadata status should be used without zoneAware: %#v", result.RemovingInstances)
+	}
+	assertObservation(t, result.Instances, "db-1", domain.RoleWriter, "db-1.example", 5432, "ap-northeast-2a")
+}
+
 func TestProviderUsesDiscoveryTimeoutForMetadataResolve(t *testing.T) {
 	resource := sampleResource()
 	resource.Spec.Discovery.Timeout.Duration = 2 * time.Second

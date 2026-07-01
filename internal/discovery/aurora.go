@@ -61,7 +61,7 @@ func (p Provider) Discover(ctx context.Context, resource *v1alpha1.PgBouncerAuro
 	}
 	metadata := map[string]InstanceMetadata{}
 	metadataErr := ""
-	if p.Metadata != nil && len(instanceNames) > 0 && zoneAwareEnabled(resource) {
+	if p.Metadata != nil && len(instanceNames) > 0 {
 		metadataCtx, cancel := context.WithTimeout(ctx, metadataTimeout(resource))
 		defer cancel()
 		metadata, err = p.Metadata.Resolve(metadataCtx, resource, uniqueSorted(instanceNames))

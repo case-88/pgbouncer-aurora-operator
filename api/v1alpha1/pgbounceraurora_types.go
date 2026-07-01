@@ -36,6 +36,7 @@ type DiscoverySpec struct {
 	ClusterEndpoints DiscoveryClusterEndpointsSpec `json:"clusterEndpoints,omitempty"`
 	Database         string                        `json:"database,omitempty"`
 	// +kubebuilder:default=require
+	// +kubebuilder:validation:Enum=disable;allow;prefer;require;verify-ca;verify-full
 	SSLMode string `json:"sslMode,omitempty"`
 	// +kubebuilder:validation:Required
 	AuthSecretRef           corev1.LocalObjectReference `json:"authSecretRef,omitempty"`

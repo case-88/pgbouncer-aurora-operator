@@ -94,6 +94,7 @@ spec:
                       default: postgres
                     sslMode:
                       type: string
+                      enum: [disable, allow, prefer, require, verify-ca, verify-full]
                       default: require
                     authSecretRef:
                       type: object
