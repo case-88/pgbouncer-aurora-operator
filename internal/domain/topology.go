@@ -19,10 +19,9 @@ type InstanceObservation struct {
 }
 
 type DiscoveryResult struct {
-	Trusted           bool
-	Instances         []InstanceObservation
-	RemovingInstances []string
-	Reason            string
+	Trusted   bool
+	Instances []InstanceObservation
+	Reason    string
 }
 
 type HealthStatus struct {

@@ -70,8 +70,8 @@ flowchart LR
   - If the Writer cluster endpoint is briefly unavailable during failover, it immediately retries with the Reader cluster endpoint built in the same discovery tick.
   - Determines role from `session_id` (`MASTER_SESSION_ID` = Writer).
   - Instance endpoints are generated deterministically as `{instanceName}.{domainName}`.
-  - RDS metadata is used only to enrich the AZ for zone-aware scheduling and `DbiResourceId` (physical instance identity); it is not used as the topology source of truth.
-  - RDS API failures or timeouts do not affect normal Discovery. RDS metadata is currently referenced only for zone-aware configuration.
+  - RDS metadata is used only to enrich the AZ for zone-aware scheduling and `DbiResourceId` (physical instance identity); it is not used as the topology source of truth or as a membership-removal trigger.
+  - RDS API failures or timeouts do not affect normal Discovery. RDS metadata is currently referenced only for zone-aware placement and physical identity enrichment/debugging.
 
 - **Rendering**
   - Creates one ConfigMap, Deployment, and Service per discovered Aurora DB instance.
@@ -186,7 +186,7 @@ The AWS docs recommend "listing individual instance nodes in a host-list" for th
 | Kubernetes | `>= 1.27` recommended | Uses `apiextensions.k8s.io/v1`, `apps/v1`, `rbac.authorization.k8s.io/v1`, and standard Service/Pod APIs. Lower versions may work but are not yet targeted. |
 | Aurora PostgreSQL | Aurora PostgreSQL with `aurora_replica_status()` | Discovery depends on `select server_id, session_id from aurora_replica_status()`. |
 | PgBouncer | `1.25.2` verified | Verified with PgBouncer `1.25.2`; provide your own image (see `spec.pgbouncer.image`). Other versions may work if the config options are compatible. |
-| AWS IAM | `rds:DescribeDBClusters`, `rds:DescribeDBInstances` | Needed only for the RDS metadata referenced by zone-aware configuration. RDS API failures or timeouts do not affect normal Discovery. EKS IRSA recommended. |
+| AWS IAM | `rds:DescribeDBClusters`, `rds:DescribeDBInstances` | Needed only for RDS metadata used by zone-aware placement and `DbiResourceId` enrichment/debugging. RDS API failures or timeouts do not affect normal Discovery. EKS IRSA recommended. |
 | Network | Pod→Aurora connectivity | The operator and PgBouncer Pods must be able to reach the Aurora endpoints/ports. |
 
 ### Build / test tools
@@ -316,7 +316,7 @@ Endpoint generation rules:
 - Reader endpoint: `{clusterName}.cluster-ro-{domainName}`
 - Instance endpoint: `{dbInstanceIdentifier}.{domainName}`
 
-`spec.discovery.interval` defaults to `3s` to follow Aurora failover quickly. This only raises the Aurora topology query frequency. AWS RDS metadata calls for the auxiliary AZ/`DbiResourceId` data are refreshed by the operator-level shared metadata worker. RDS API failures or timeouts do not affect normal Discovery. RDS metadata is currently referenced only for zone-aware configuration.
+`spec.discovery.interval` defaults to `3s` to follow Aurora failover quickly. This only raises the Aurora topology query frequency. AWS RDS metadata calls for the auxiliary AZ/`DbiResourceId` data are refreshed by the operator-level shared metadata worker. RDS API failures or timeouts do not affect normal Discovery. RDS metadata is currently referenced only for zone-aware placement and physical identity enrichment/debugging, not for traffic membership removal.
 
 The operator does not infer the AWS region from `spec.discovery.domainName`. RDS metadata lookups use the operator process flag `--aws-region`, so this region must match the region of the Aurora cluster that `domainName` points at. For multi-region operation, run a separate operator deployment per region.
 
@@ -465,7 +465,7 @@ Only the public operational flags are listed below. Scheduler discovery/monitor 
 | `--health-probe-bind-address` | `:8081` | address | Health/readiness probe bind address. |
 | `--leader-elect` | `false` | boolean | Enable controller-runtime leader election. The default manifest passes this flag. |
 | `--aws-region` | `""` | AWS region | Single AWS region for RDS metadata lookups. Must match the Aurora region the managed CRs use. The default manifest sets `ap-northeast-2`. |
-| `--rds-metadata-refresh-interval` | `RDS_METADATA_REFRESH_INTERVAL` or `1m` | Go duration | Shared RDS metadata refresh interval for AZ/`DbiResourceId` and deleting fast-removal data. Values below `10s` are clamped to `10s`. |
+| `--rds-metadata-refresh-interval` | `RDS_METADATA_REFRESH_INTERVAL` or `1m` | Go duration | Shared RDS metadata refresh interval for AZ/`DbiResourceId` enrichment. Values below `10s` are clamped to `10s`. |
 | `--aws-api-qps` | `AWS_API_QPS` or `1` | requests/sec | Defensive AWS API limiter for the shared metadata worker. Normal load is already bounded by cluster de-duplication and the refresh interval. |
 | `--aws-api-burst` | `AWS_API_BURST` or `1` | requests | Defensive AWS API limiter burst. |
 | `--workers-per-cr` | `WORKERS_PER_CR` or `4` | count | Maximum concurrent backend monitor probes within one CR. The monitor creates only the workers needed for the current backend count, so 1-2 instance clusters do not keep four idle workers. |
@@ -589,7 +589,7 @@ Beyond failover, common operational topology-change cases were measured.
 | Reader deletion | Exclude the deleted Reader from the Reader Service, and clean up per-instance resources per the retention policy | Excluded from the Reader Service immediately once the discovery/missing-count policy is reflected | Excluded right after deletion detection, apply \~80ms |
 | All Readers removed | Temporarily join the Writer via `readerEmptyFallback` so the Reader Service is not empty | Once usable Readers reach 0, the Reader Service is temporarily corrected to the Writer instance | While Reader candidates are 0, the Reader Service is not emptied and points at the fallback Writer. Once a real Reader is ready, the fallback Writer is removed |
 
-In these measurements too, the topology source of truth is `aurora_replica_status()`, and RDS metadata is an optional layer that enriches AZ/`DbiResourceId` only when zoneAware is on. A metadata refresh failure does not make discovery untrusted, and ordinary add/remove proceeds via the discovery/monitor policy.
+In these measurements too, the topology source of truth is `aurora_replica_status()`, and RDS metadata is an optional layer for AZ/`DbiResourceId` enrichment and debugging. A metadata refresh failure does not make discovery untrusted, and ordinary add/remove proceeds via the discovery/monitor policy rather than RDS instance status.
 
 ## Reader Service load balancing
 

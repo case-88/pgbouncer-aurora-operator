@@ -186,8 +186,10 @@ spec:
     readerEmptyFallback:
       enabled: true
 
-    # Zone-aware placement uses RDS metadata only to add Aurora instance AZ
-    # affinity. Aurora SQL discovery remains the role/topology source of truth.
+    # Zone-aware placement uses optional RDS metadata for Aurora instance AZ
+    # affinity and DbiResourceId enrichment. Aurora SQL discovery remains the
+    # role/topology source of truth; RDS instance status does not remove traffic
+    # membership.
     zoneAware:
       enabled: true
 
