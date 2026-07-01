@@ -91,9 +91,11 @@ func TestInstanceDeploymentUsesSafeRollingUpdateStrategy(t *testing.T) {
 	}
 }
 
-func TestInstanceDeploymentUsesDbiResourceIDAsRolloutAnnotationOnly(t *testing.T) {
+func TestInstanceDeploymentUsesDbiResourceIDAsDeploymentMetadataOnly(t *testing.T) {
 	owner := &v1alpha1.PgBouncerAurora{}
 	owner.Name = "sample"
+	owner.Spec.PgBouncer.Labels = map[string]string{LabelDbiResourceID: "user-supplied"}
+	owner.Spec.PgBouncer.Annotations = map[string]string{AnnotationDbiResourceID: "user-supplied"}
 	deployment := InstanceDeployment(InstanceRenderInput{
 		Owner: owner,
 		Instance: domain.InstancePlan{InstanceObservation: domain.InstanceObservation{
@@ -102,17 +104,18 @@ func TestInstanceDeploymentUsesDbiResourceIDAsRolloutAnnotationOnly(t *testing.T
 		}, Replicas: 1},
 	})
 
+	if deployment.Labels[LabelDbiResourceID] != "dbi-new" {
+		t.Fatalf("deployment DBI label mismatch: %#v", deployment.Labels)
+	}
 	if deployment.Annotations[AnnotationDbiResourceID] != "dbi-new" {
 		t.Fatalf("deployment DBI annotation mismatch: %#v", deployment.Annotations)
 	}
-	if deployment.Spec.Template.Annotations[AnnotationDbiResourceID] != "dbi-new" {
-		t.Fatalf("pod template DBI annotation mismatch: %#v", deployment.Spec.Template.Annotations)
+	if value := deployment.Spec.Template.Annotations[AnnotationDbiResourceID]; value != "" {
+		t.Fatalf("pod template must not carry DBI annotation: %#v", deployment.Spec.Template.Annotations)
 	}
-	for _, labels := range []map[string]string{deployment.Labels, deployment.Spec.Selector.MatchLabels, deployment.Spec.Template.Labels} {
-		for key := range labels {
-			if strings.Contains(key, "dbi") {
-				t.Fatalf("DBI must not be used as a selector/label key: %#v", labels)
-			}
+	for _, labels := range []map[string]string{deployment.Spec.Selector.MatchLabels, deployment.Spec.Template.Labels} {
+		if value := labels[LabelDbiResourceID]; value != "" {
+			t.Fatalf("DBI must not be used as selector or pod template label: %#v", labels)
 		}
 	}
 }

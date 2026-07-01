@@ -1343,6 +1343,124 @@ func TestApplyDesiredRollsDeploymentOnAuthFileSecretContentChange(t *testing.T) 
 	}
 }
 
+func TestDeploymentDbiMetadataDriftedRequiresNonEmptyIdentity(t *testing.T) {
+	resource := sampleResource()
+	existing := render.InstanceDeployment(render.InstanceRenderInput{
+		Owner: resource,
+		Instance: domain.InstancePlan{InstanceObservation: domain.InstanceObservation{
+			Name:          "db-1",
+			DbiResourceId: "dbi-old",
+		}},
+	})
+	expected := render.InstanceDeployment(render.InstanceRenderInput{
+		Owner: resource,
+		Instance: domain.InstancePlan{InstanceObservation: domain.InstanceObservation{
+			Name:          "db-1",
+			DbiResourceId: "dbi-new",
+		}},
+	})
+
+	if !deploymentDbiMetadataDrifted(existing, expected) {
+		t.Fatalf("expected different non-empty DBI identities to drift")
+	}
+
+	delete(existing.Labels, render.LabelDbiResourceID)
+	if !deploymentDbiMetadataDrifted(existing, expected) {
+		t.Fatalf("expected missing DBI label to be backfilled when desired DBI is known")
+	}
+
+	existing.Labels[render.LabelDbiResourceID] = "dbi-old"
+	expected.Labels[render.LabelDbiResourceID] = ""
+	if deploymentDbiMetadataDrifted(existing, expected) {
+		t.Fatalf("unknown desired DBI should not be treated as replacement")
+	}
+}
+
+func TestApplyDesiredStoresDbiIdentityOnDeploymentMetadataOnly(t *testing.T) {
+	ctx := context.Background()
+	scheme := testScheme(t)
+	resource := sampleResource()
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(resource).Build()
+	reconciler := &PgBouncerAuroraReconciler{Client: c, Scheme: scheme}
+	plan := planner.Output{Instances: []domain.InstancePlan{{
+		InstanceObservation: domain.InstanceObservation{
+			Name:          "db-1",
+			Endpoint:      "db-1.example",
+			Port:          5432,
+			Role:          domain.RoleWriter,
+			DbiResourceId: "dbi-new",
+		},
+		Replicas: 1,
+	}}}
+
+	if err := reconciler.applyDesired(ctx, resource, plan); err != nil {
+		t.Fatal(err)
+	}
+
+	deployment := assertExists[*appsv1.Deployment](t, ctx, c, "sample-db-1")
+	if deployment.Labels[render.LabelDbiResourceID] != "dbi-new" {
+		t.Fatalf("deployment DBI label mismatch: %q", deployment.Labels[render.LabelDbiResourceID])
+	}
+	if deployment.Annotations[render.AnnotationDbiResourceID] != "dbi-new" {
+		t.Fatalf("deployment DBI annotation mismatch: %q", deployment.Annotations[render.AnnotationDbiResourceID])
+	}
+	if value := deployment.Spec.Template.Labels[render.LabelDbiResourceID]; value != "" {
+		t.Fatalf("pod template must not carry DBI label: %q", value)
+	}
+	if value := deployment.Spec.Template.Annotations[render.AnnotationDbiResourceID]; value != "" {
+		t.Fatalf("pod template must not carry DBI annotation: %q", value)
+	}
+	if value := deployment.Spec.Selector.MatchLabels[render.LabelDbiResourceID]; value != "" {
+		t.Fatalf("selector must not carry DBI label: %q", value)
+	}
+}
+
+func TestApplyDesiredPreservesDbiIdentityWhenDesiredDbiUnknown(t *testing.T) {
+	ctx := context.Background()
+	scheme := testScheme(t)
+	resource := sampleResource()
+	existing := render.InstanceDeployment(render.InstanceRenderInput{
+		Owner: resource,
+		Instance: domain.InstancePlan{InstanceObservation: domain.InstanceObservation{
+			Name:          "db-1",
+			Endpoint:      "db-1.example",
+			Port:          5432,
+			Role:          domain.RoleWriter,
+			DbiResourceId: "dbi-old",
+		}},
+	})
+	if existing.Spec.Template.Annotations == nil {
+		existing.Spec.Template.Annotations = map[string]string{}
+	}
+	existing.Spec.Template.Annotations[render.AnnotationDbiResourceID] = "dbi-old"
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(resource, existing).Build()
+	reconciler := &PgBouncerAuroraReconciler{Client: c, Scheme: scheme}
+	plan := planner.Output{Instances: []domain.InstancePlan{{
+		InstanceObservation: domain.InstanceObservation{
+			Name:     "db-1",
+			Endpoint: "db-1.example",
+			Port:     5432,
+			Role:     domain.RoleWriter,
+		},
+		Replicas: 1,
+	}}}
+
+	if err := reconciler.applyDesired(ctx, resource, plan); err != nil {
+		t.Fatal(err)
+	}
+
+	deployment := assertExists[*appsv1.Deployment](t, ctx, c, "sample-db-1")
+	if deployment.Labels[render.LabelDbiResourceID] != "dbi-old" {
+		t.Fatalf("known deployment DBI label should be preserved while desired DBI is unknown: %q", deployment.Labels[render.LabelDbiResourceID])
+	}
+	if deployment.Annotations[render.AnnotationDbiResourceID] != "dbi-old" {
+		t.Fatalf("known deployment DBI annotation should be preserved while desired DBI is unknown: %q", deployment.Annotations[render.AnnotationDbiResourceID])
+	}
+	if value := deployment.Spec.Template.Annotations[render.AnnotationDbiResourceID]; value != "" {
+		t.Fatalf("legacy pod template DBI annotation should be removed: %q", value)
+	}
+}
+
 func TestApplyDesiredSkipsAuthSecretLookupWithoutInstances(t *testing.T) {
 	ctx := context.Background()
 	scheme := testScheme(t)
