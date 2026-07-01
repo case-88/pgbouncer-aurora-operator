@@ -25,7 +25,7 @@ type ProbeMonitor struct {
 	JobTimeout   time.Duration
 }
 
-const defaultWorkersPerCR = 4
+const defaultWorkersPerCR = 10
 
 func (m ProbeMonitor) Check(ctx context.Context, resource *v1alpha1.PgBouncerAurora, instances []domain.InstanceObservation) (map[string]domain.HealthStatus, error) {
 	instances = enabledInstances(resource, instances)
