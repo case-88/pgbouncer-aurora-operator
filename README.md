@@ -8,7 +8,7 @@
 
 `pgbouncer-aurora-operator` watches Aurora PostgreSQL topology and runs one PgBouncer per DB instance (1:1). Applications can connect through fixed Writer/Reader Kubernetes Services, or through per-instance Services as a host-list, while the operator keeps Service membership aligned with the current Aurora roles. Its goal is to reduce the Reader connection skew that PgBouncer pooling introduces and to reflect topology changes such as instance scaling and failover into the connection layer automatically.
 
-> Status: public alpha — `v0.1.0-alpha.1` (CRD API `v1alpha1`). A multi-arch image (`linux/amd64`, `linux/arm64`) is published on Quay and raw Kubernetes manifests ship under `deploy/`. APIs and manifests may still change before a stable release; a Helm chart is not available yet.
+> Status: `v0.1.0` (CRD API `v1alpha1`). A multi-arch image (`linux/amd64`, `linux/arm64`) is published on Quay and raw Kubernetes manifests ship under `deploy/`. Helm packaging is versioned and released separately from the core manifest/image release.
 
 ## Table of Contents
 
@@ -222,15 +222,15 @@ The AWS docs recommend "listing individual instance nodes in a host-list" for th
 
 ## Installation
 
-This installs the published public alpha image with `kubectl`. To build and run your own image instead, see [Build from source](#build-from-source-custom-image).
+This installs the published image with `kubectl`. To build and run your own image instead, see [Build from source](#build-from-source-custom-image).
 
-> **Pre-release.** This is an alpha (`v0.1.0-alpha.1`); the API and manifests may change before a stable release. Pin the explicit version tag shown below — the `latest` tag is intentionally not published. See [Requirements](#requirements) for the cluster, Aurora, IAM, and network prerequisites.
+> Pin the explicit version tag shown below. See [Requirements](#requirements) for the cluster, Aurora, IAM, and network prerequisites.
 
 ### 1. Install the operator
 
 ```bash
 # Set your environment
-VERSION=v0.1.0-alpha.1
+VERSION=v0.1.0
 NAMESPACE=pgbouncer-aurora
 OPERATOR_IMAGE=quay.io/case-88/pgbouncer-aurora-operator:${VERSION}
 RAW=https://raw.githubusercontent.com/case-88/pgbouncer-aurora-operator/${VERSION}/deploy
@@ -356,7 +356,7 @@ Monitor uses Pod readiness and an always-on direct DB probe.
 - **Direct DB probe** — connects directly to the Aurora instance to check health/role. The connection DB is `spec.discovery.database` (default `postgres`), and the SSL mode follows `spec.discovery.sslMode`.
   - For `sslmode=verify-full`, the operator Pod must trust the Aurora CA. With the pgx driver this can be done by mounting the CA bundle into the operator Pod and setting `PGSSLROOTCERT` to that file path.
 
-TLS from PgBouncer to Aurora can be configured through PgBouncer settings such as `server_tls_sslmode` and `server_tls_ca_file`, with the CA file mounted through `spec.pgbouncer.volumes` and `volumeMounts`. Client-to-PgBouncer TLS is not managed by this alpha API; terminate it outside the operator or provide the required PgBouncer files through custom volumes if you choose to manage it yourself.
+TLS from PgBouncer to Aurora can be configured through PgBouncer settings such as `server_tls_sslmode` and `server_tls_ca_file`, with the CA file mounted through `spec.pgbouncer.volumes` and `volumeMounts`. Client-to-PgBouncer TLS is not managed directly by the operator API; terminate it outside the operator or provide the required PgBouncer files through custom volumes if you choose to manage it yourself.
 
 #### `spec.pgbouncer`
 
