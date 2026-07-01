@@ -37,13 +37,13 @@ import (
 var scheme = runtime.NewScheme()
 
 const (
-	defaultMaxConcurrentReconciles = 2
-	defaultAWSAPIQPS               = 5
-	defaultAWSAPIBurst             = 10
-	defaultDBProbeQPS              = 50
-	defaultDBProbeBurst            = 100
-	defaultDiscoveryWorkers        = 8
-	defaultMonitorWorkers          = 8
+	defaultMaxConcurrentReconciles = 64
+	defaultAWSAPIQPS               = 1
+	defaultAWSAPIBurst             = 1
+	defaultWorkersPerCR            = 4
+	defaultRDSMetadataRefresh      = time.Minute
+	minRDSMetadataCacheTTL         = 5 * time.Minute
+	minRDSMetadataRefresh          = 10 * time.Second
 )
 
 func init() {
@@ -61,17 +61,13 @@ func main() {
 	var watchNamespace string
 	var watchNames watchNameListFlag
 	var maxConcurrentReconciles int
-	var rdsMetadataCacheTTL time.Duration
+	var rdsMetadataRefreshInterval time.Duration
 	var resyncPeriod time.Duration
 	var reconcileMinInterval time.Duration
 	var awsAPIQPS float64
 	var awsAPIBurst int
-	var dbProbeQPS float64
-	var dbProbeBurst int
-	var monitorJobTimeout time.Duration
 	var schedulerTick time.Duration
-	var discoveryWorkers int
-	var monitorWorkers int
+	var workersPerCR int
 	var statusRefreshMinInterval time.Duration
 	var statusRecentWindow time.Duration
 	var zapDevel bool
@@ -82,17 +78,13 @@ func main() {
 	flag.StringVar(&watchNamespace, "watch-namespace", "", "Namespace to watch. Defaults to WATCH_NAMESPACE. Empty is invalid.")
 	flag.Var(&watchNames, "watch-names", "Comma-separated PgBouncerAurora resource names to watch. Can be repeated. Defaults to WATCH_NAMES. Empty or * watches all resources in the namespace.")
 	flag.IntVar(&maxConcurrentReconciles, "max-concurrent-reconciles", defaultMaxConcurrentReconciles, "Advanced: maximum number of concurrent PgBouncerAurora reconciles.")
-	flag.DurationVar(&rdsMetadataCacheTTL, "rds-metadata-cache-ttl", time.Minute, "RDS DB instance metadata cache TTL. Values <=0 use the resolver default.")
+	flag.DurationVar(&rdsMetadataRefreshInterval, "rds-metadata-refresh-interval", 0, "Shared RDS metadata refresh interval. Defaults to RDS_METADATA_REFRESH_INTERVAL or 1m; values below 10s are clamped.")
 	flag.DurationVar(&resyncPeriod, "resync-period", 0, "Controller cache resync period. Defaults to RESYNC_PERIOD or 60s.")
-	flag.DurationVar(&reconcileMinInterval, "reconcile-min-interval", 0, "Minimum interval between heavy reconciles for the same PgBouncerAurora. Defaults to RECONCILE_MIN_INTERVAL or 1s.")
-	flag.Float64Var(&awsAPIQPS, "aws-api-qps", 0, "Advanced: global AWS API rate limit QPS. Defaults to AWS_API_QPS or 5.")
-	flag.IntVar(&awsAPIBurst, "aws-api-burst", 0, "Advanced: global AWS API rate limit burst. Defaults to AWS_API_BURST or 10.")
-	flag.Float64Var(&dbProbeQPS, "db-probe-qps", 0, "Advanced: global DB probe rate limit QPS. Defaults to DB_PROBE_QPS or 50.")
-	flag.IntVar(&dbProbeBurst, "db-probe-burst", 0, "Advanced: global DB probe rate limit burst. Defaults to DB_PROBE_BURST or 100.")
-	flag.DurationVar(&monitorJobTimeout, "monitor-job-timeout", 0, "Advanced: whole monitor job timeout. Defaults to an internal per-CR dynamic timeout.")
+	flag.DurationVar(&reconcileMinInterval, "reconcile-min-interval", 0, "Minimum interval between heavy reconciles for the same PgBouncerAurora CR. Defaults to RECONCILE_MIN_INTERVAL or 1s.")
+	flag.Float64Var(&awsAPIQPS, "aws-api-qps", 0, "Defensive AWS API rate limit QPS. Defaults to AWS_API_QPS or 1.")
+	flag.IntVar(&awsAPIBurst, "aws-api-burst", 0, "Defensive AWS API rate limit burst. Defaults to AWS_API_BURST or 1.")
 	flag.DurationVar(&schedulerTick, "scheduler-tick", 0, "Discovery/monitor scheduler tick. Defaults to SCHEDULER_TICK or 1s.")
-	flag.IntVar(&discoveryWorkers, "discovery-workers", 0, "Advanced: number of discovery workers. Defaults to DISCOVERY_WORKERS or 8.")
-	flag.IntVar(&monitorWorkers, "monitor-workers", 0, "Advanced: number of monitor workers. Defaults to MONITOR_WORKERS or 8.")
+	flag.IntVar(&workersPerCR, "workers-per-cr", 0, "Maximum concurrent backend monitor probes per PgBouncerAurora CR. Defaults to WORKERS_PER_CR or 4.")
 	flag.DurationVar(&statusRefreshMinInterval, "status-refresh-min-interval", 0, "Minimum interval for refreshing the cached /status snapshot. Defaults to STATUS_REFRESH_MIN_INTERVAL or 5s.")
 	flag.DurationVar(&statusRecentWindow, "status-recent-window", 0, "Window for highlighting recently changed /status items. Defaults to STATUS_RECENT_WINDOW or 1m; clamped to 1m..24h.")
 	flag.BoolVar(&zapDevel, "zap-devel", false, "Enable development-mode logging.")
@@ -110,6 +102,11 @@ func main() {
 		ctrl.Log.Error(err, "invalid resync period")
 		os.Exit(1)
 	}
+	rdsMetadataRefreshInterval, err = effectiveRDSMetadataRefreshInterval(rdsMetadataRefreshInterval)
+	if err != nil {
+		ctrl.Log.Error(err, "invalid RDS metadata refresh interval")
+		os.Exit(1)
+	}
 	reconcileMinInterval, err = effectiveDuration(reconcileMinInterval, "RECONCILE_MIN_INTERVAL", time.Second)
 	if err != nil {
 		ctrl.Log.Error(err, "invalid reconcile minimum interval")
@@ -125,34 +122,14 @@ func main() {
 		ctrl.Log.Error(err, "invalid AWS API burst")
 		os.Exit(1)
 	}
-	dbProbeQPS, err = effectiveFloat(dbProbeQPS, "DB_PROBE_QPS", defaultDBProbeQPS)
-	if err != nil {
-		ctrl.Log.Error(err, "invalid DB probe QPS")
-		os.Exit(1)
-	}
-	dbProbeBurst, err = effectiveInt(dbProbeBurst, "DB_PROBE_BURST", defaultDBProbeBurst)
-	if err != nil {
-		ctrl.Log.Error(err, "invalid DB probe burst")
-		os.Exit(1)
-	}
-	monitorJobTimeout, err = effectiveDuration(monitorJobTimeout, "MONITOR_JOB_TIMEOUT", 0)
-	if err != nil {
-		ctrl.Log.Error(err, "invalid monitor job timeout")
-		os.Exit(1)
-	}
 	schedulerTick, err = effectiveDuration(schedulerTick, "SCHEDULER_TICK", time.Second)
 	if err != nil {
 		ctrl.Log.Error(err, "invalid scheduler tick")
 		os.Exit(1)
 	}
-	discoveryWorkers, err = effectiveInt(discoveryWorkers, "DISCOVERY_WORKERS", defaultDiscoveryWorkers)
+	workersPerCR, err = effectiveInt(workersPerCR, "WORKERS_PER_CR", defaultWorkersPerCR)
 	if err != nil {
-		ctrl.Log.Error(err, "invalid discovery workers")
-		os.Exit(1)
-	}
-	monitorWorkers, err = effectiveInt(monitorWorkers, "MONITOR_WORKERS", defaultMonitorWorkers)
-	if err != nil {
-		ctrl.Log.Error(err, "invalid monitor workers")
+		ctrl.Log.Error(err, "invalid workers per CR")
 		os.Exit(1)
 	}
 	statusRefreshMinInterval, err = effectiveStatusRefreshMinInterval(statusRefreshMinInterval)
@@ -194,17 +171,16 @@ func main() {
 	metadataResolver, err := auroradiscovery.NewRDSMetadataResolver(context.Background(), awsRegion)
 	if err != nil {
 		ctrl.Log.Error(err, "unable to initialize RDS metadata resolver; zone-aware AZ enrichment will be unavailable")
-	} else if rdsMetadataCacheTTL > 0 {
-		metadataResolver.CacheTTL = rdsMetadataCacheTTL
+	} else {
+		metadataResolver.CacheTTL = rdsMetadataCacheTTL(rdsMetadataRefreshInterval)
+		metadataResolver.CachedOnly = true
 	}
 	if metadataResolver != nil && awsAPIQPS > 0 && awsAPIBurst > 0 {
+		// The metadata worker is already bounded by its refresh interval and cluster de-duplication.
+		// Keep this low limiter only as a defensive circuit breaker against accidental hot-loop bugs.
 		metadataResolver.RateLimiter = rate.NewLimiter(rate.Limit(awsAPIQPS), awsAPIBurst)
 	}
 	dbFactory := postgres.SQLDBFactory{}
-	var dbProbeLimiter *rate.Limiter
-	if dbProbeQPS > 0 && dbProbeBurst > 0 {
-		dbProbeLimiter = rate.NewLimiter(rate.Limit(dbProbeQPS), dbProbeBurst)
-	}
 	scheduleEvents := make(chan event.GenericEvent, 1024)
 	reconciler := &controller.PgBouncerAuroraReconciler{
 		Client:    mgr.GetClient(),
@@ -214,7 +190,7 @@ func main() {
 			Rows:     auroradiscovery.KubernetesRowSource{Client: mgr.GetClient(), DBFactory: dbFactory},
 			Metadata: metadataResolver,
 		},
-		Monitor:                 pgmonitor.ProbeMonitor{Client: mgr.GetClient(), DBFactory: dbFactory, JobTimeout: monitorJobTimeout, ProbeLimiter: dbProbeLimiter},
+		Monitor:                 pgmonitor.ProbeMonitor{Client: mgr.GetClient(), DBFactory: dbFactory, WorkersPerCR: workersPerCR},
 		MaxConcurrentReconciles: maxConcurrentReconciles,
 		WatchName:               watchTarget,
 		ReconcileMinInterval:    reconcileMinInterval,
@@ -225,20 +201,31 @@ func main() {
 		os.Exit(1)
 	}
 	if err := mgr.Add(&controller.Scheduler{
-		Client:           mgr.GetClient(),
-		APIReader:        mgr.GetAPIReader(),
-		Discovery:        reconciler.Discovery,
-		Monitor:          reconciler.Monitor,
-		Events:           scheduleEvents,
-		Namespace:        watchNamespace,
-		WatchName:        watchTarget,
-		Tick:             schedulerTick,
-		DiscoveryWorkers: discoveryWorkers,
-		MonitorWorkers:   monitorWorkers,
-		Log:              ctrl.Log.WithName("scheduler"),
+		Client:    mgr.GetClient(),
+		APIReader: mgr.GetAPIReader(),
+		Discovery: reconciler.Discovery,
+		Monitor:   reconciler.Monitor,
+		Events:    scheduleEvents,
+		Namespace: watchNamespace,
+		WatchName: watchTarget,
+		Tick:      schedulerTick,
+		Log:       ctrl.Log.WithName("scheduler"),
 	}); err != nil {
 		ctrl.Log.Error(err, "unable to add scheduler")
 		os.Exit(1)
+	}
+	if metadataResolver != nil {
+		if err := mgr.Add(&controller.RDSMetadataWorker{
+			Client:    mgr.GetClient(),
+			Refresher: metadataResolver,
+			Namespace: watchNamespace,
+			WatchName: watchTarget,
+			Interval:  rdsMetadataRefreshInterval,
+			Log:       ctrl.Log.WithName("rds-metadata"),
+		}); err != nil {
+			ctrl.Log.Error(err, "unable to add RDS metadata worker")
+			os.Exit(1)
+		}
 	}
 	if err := mgr.Add(statusServer); err != nil {
 		ctrl.Log.Error(err, "unable to add status snapshotter")
@@ -376,6 +363,25 @@ func effectiveStatusRefreshMinInterval(flagValue time.Duration) (time.Duration, 
 		return 0, err
 	}
 	return statuspage.ClampRefreshMinInterval(value), nil
+}
+
+func effectiveRDSMetadataRefreshInterval(flagValue time.Duration) (time.Duration, error) {
+	value, err := effectiveDuration(flagValue, "RDS_METADATA_REFRESH_INTERVAL", defaultRDSMetadataRefresh)
+	if err != nil {
+		return 0, err
+	}
+	if value < minRDSMetadataRefresh {
+		return minRDSMetadataRefresh, nil
+	}
+	return value, nil
+}
+
+func rdsMetadataCacheTTL(refreshInterval time.Duration) time.Duration {
+	ttl := 3 * refreshInterval
+	if ttl < minRDSMetadataCacheTTL {
+		return minRDSMetadataCacheTTL
+	}
+	return ttl
 }
 
 func effectiveStatusRecentWindow(flagValue time.Duration) (time.Duration, error) {

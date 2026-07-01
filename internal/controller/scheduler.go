@@ -22,28 +22,19 @@ import (
 )
 
 type Scheduler struct {
-	Client           client.Client
-	APIReader        client.Reader
-	Discovery        Discovery
-	Monitor          Monitor
-	Events           chan<- event.GenericEvent
-	Namespace        string
-	WatchName        string
-	Tick             time.Duration
-	DiscoveryWorkers int
-	MonitorWorkers   int
-	Log              logr.Logger
+	Client    client.Client
+	APIReader client.Reader
+	Discovery Discovery
+	Monitor   Monitor
+	Events    chan<- event.GenericEvent
+	Namespace string
+	WatchName string
+	Tick      time.Duration
+	Log       logr.Logger
 
-	discoveryJobs chan types.NamespacedName
-	monitorJobs   chan types.NamespacedName
-	inFlightMu    sync.Mutex
-	inFlight      map[string]struct{}
+	inFlightMu sync.Mutex
+	inFlight   map[string]struct{}
 }
-
-const (
-	defaultDiscoveryWorkers = 8
-	defaultMonitorWorkers   = 8
-)
 
 func (s *Scheduler) Start(ctx context.Context) error {
 	tick := s.tick()
@@ -52,21 +43,11 @@ func (s *Scheduler) Start(ctx context.Context) error {
 	if s.Log.GetSink() == nil {
 		s.Log = ctrl.Log.WithName("scheduler")
 	}
-	s.discoveryJobs = make(chan types.NamespacedName, 1024)
-	s.monitorJobs = make(chan types.NamespacedName, 1024)
 	s.inFlight = map[string]struct{}{}
-	for i := 0; i < s.discoveryWorkers(); i++ {
-		go s.discoveryWorker(ctx, i)
-	}
-	for i := 0; i < s.monitorWorkers(); i++ {
-		go s.monitorWorker(ctx, i)
-	}
 	s.Log.Info("scheduler started",
 		"namespace", s.Namespace,
 		"watchName", s.WatchName,
 		"tick", tick.String(),
-		"discoveryWorkers", s.discoveryWorkers(),
-		"monitorWorkers", s.monitorWorkers(),
 	)
 	s.logManagedResources(ctx)
 	for {
@@ -137,55 +118,43 @@ func (s *Scheduler) enqueueDueJobs(ctx context.Context) {
 		}
 		key := types.NamespacedName{Name: resource.Name, Namespace: resource.Namespace}
 		if discoveryDue(resource, now) {
-			s.enqueueJob(ctx, "discovery", key, s.discoveryJobs)
+			s.enqueueJob(ctx, "discovery", key, s.runDiscoveryJob)
 		}
 		if monitorDue(resource, now) && len(resource.Status.LastKnownTopology.Instances) > 0 {
-			s.enqueueJob(ctx, "monitor", key, s.monitorJobs)
+			s.enqueueJob(ctx, "monitor", key, s.runMonitorJob)
 		}
 	}
 }
 
-func (s *Scheduler) enqueueJob(ctx context.Context, kind string, key types.NamespacedName, jobs chan<- types.NamespacedName) {
+func (s *Scheduler) enqueueJob(ctx context.Context, kind string, key types.NamespacedName, run func(context.Context, types.NamespacedName)) {
 	if !s.markInFlight(kind, key) {
 		return
 	}
+	s.Log.V(1).Info("scheduled job", "kind", kind, "namespace", key.Namespace, "cr", key.Name)
+	go func() {
+		defer s.clearInFlight(kind, key)
+		if ctx.Err() != nil {
+			return
+		}
+		run(ctx, key)
+	}()
+}
+
+func (s *Scheduler) enqueueReconcile(ctx context.Context, key types.NamespacedName) {
+	if s.Events == nil {
+		return
+	}
+	resource := &v1alpha1.PgBouncerAurora{ObjectMeta: metav1.ObjectMeta{Name: key.Name, Namespace: key.Namespace}}
 	select {
-	case jobs <- key:
-		s.Log.V(1).Info("scheduled job", "kind", kind, "namespace", key.Namespace, "cr", key.Name)
+	case s.Events <- event.GenericEvent{Object: resource}:
 	case <-ctx.Done():
-		s.clearInFlight(kind, key)
 	default:
-		s.clearInFlight(kind, key)
-		s.Log.Error(fmt.Errorf("scheduler %s job queue is full", kind), "scheduler job queue full", "kind", kind, "namespace", key.Namespace, "cr", key.Name)
+		s.Log.Error(fmt.Errorf("reconcile event queue is full"), "reconcile event queue full", "namespace", key.Namespace, "cr", key.Name)
 	}
 }
 
-func (s *Scheduler) discoveryWorker(ctx context.Context, id int) {
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case key := <-s.discoveryJobs:
-			s.runDiscoveryJob(ctx, id, key)
-			s.clearInFlight("discovery", key)
-		}
-	}
-}
-
-func (s *Scheduler) monitorWorker(ctx context.Context, id int) {
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case key := <-s.monitorJobs:
-			s.runMonitorJob(ctx, id, key)
-			s.clearInFlight("monitor", key)
-		}
-	}
-}
-
-func (s *Scheduler) runDiscoveryJob(ctx context.Context, id int, key types.NamespacedName) {
-	log := s.Log.WithValues("worker", id, "kind", "discovery", "namespace", key.Namespace, "cr", key.Name)
+func (s *Scheduler) runDiscoveryJob(ctx context.Context, key types.NamespacedName) {
+	log := s.Log.WithValues("kind", "discovery", "namespace", key.Namespace, "cr", key.Name)
 	startedAt := time.Now()
 	if s.Discovery == nil {
 		log.Info("discovery skipped: provider not configured")
@@ -259,8 +228,8 @@ func (s *Scheduler) runDiscoveryJob(ctx context.Context, id int, key types.Names
 	s.enqueueReconcile(ctx, key)
 }
 
-func (s *Scheduler) runMonitorJob(ctx context.Context, id int, key types.NamespacedName) {
-	log := s.Log.WithValues("worker", id, "kind", "monitor", "namespace", key.Namespace, "cr", key.Name)
+func (s *Scheduler) runMonitorJob(ctx context.Context, key types.NamespacedName) {
+	log := s.Log.WithValues("kind", "monitor", "namespace", key.Namespace, "cr", key.Name)
 	startedAt := time.Now()
 	if s.Monitor == nil {
 		log.V(1).Info("monitor skipped: provider not configured")
@@ -399,19 +368,6 @@ func (s *Scheduler) getResource(ctx context.Context, key types.NamespacedName, r
 	return s.Client.Get(ctx, key, resource)
 }
 
-func (s *Scheduler) enqueueReconcile(ctx context.Context, key types.NamespacedName) {
-	if s.Events == nil {
-		return
-	}
-	resource := &v1alpha1.PgBouncerAurora{ObjectMeta: metav1.ObjectMeta{Name: key.Name, Namespace: key.Namespace}}
-	select {
-	case s.Events <- event.GenericEvent{Object: resource}:
-	case <-ctx.Done():
-	default:
-		s.Log.Error(fmt.Errorf("reconcile event queue is full"), "reconcile event queue full", "namespace", key.Namespace, "cr", key.Name)
-	}
-}
-
 func (s *Scheduler) markInFlight(kind string, key types.NamespacedName) bool {
 	s.inFlightMu.Lock()
 	defer s.inFlightMu.Unlock()
@@ -463,20 +419,6 @@ func matchesWatchNames(watchNames string, name string) bool {
 		}
 	}
 	return false
-}
-
-func (s *Scheduler) discoveryWorkers() int {
-	if s.DiscoveryWorkers > 0 {
-		return s.DiscoveryWorkers
-	}
-	return defaultDiscoveryWorkers
-}
-
-func (s *Scheduler) monitorWorkers() int {
-	if s.MonitorWorkers > 0 {
-		return s.MonitorWorkers
-	}
-	return defaultMonitorWorkers
 }
 
 func cachedDiscovery(resource *v1alpha1.PgBouncerAurora) domain.DiscoveryResult {

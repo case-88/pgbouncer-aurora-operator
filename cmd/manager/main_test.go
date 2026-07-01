@@ -152,6 +152,33 @@ func TestEffectiveStatusRefreshMinIntervalClampsTooSmallValues(t *testing.T) {
 	}
 }
 
+func TestEffectiveRDSMetadataRefreshIntervalClampsTooSmallValues(t *testing.T) {
+	t.Setenv("RDS_METADATA_REFRESH_INTERVAL", "1s")
+	if got, err := effectiveRDSMetadataRefreshInterval(0); err != nil || got != minRDSMetadataRefresh {
+		t.Fatalf("env duration should be clamped: got=%s err=%v", got, err)
+	}
+	if got, err := effectiveRDSMetadataRefreshInterval(time.Second); err != nil || got != minRDSMetadataRefresh {
+		t.Fatalf("flag duration should be clamped: got=%s err=%v", got, err)
+	}
+	t.Setenv("RDS_METADATA_REFRESH_INTERVAL", "30s")
+	if got, err := effectiveRDSMetadataRefreshInterval(0); err != nil || got != 30*time.Second {
+		t.Fatalf("larger env duration should be preserved: got=%s err=%v", got, err)
+	}
+	t.Setenv("RDS_METADATA_REFRESH_INTERVAL", "")
+	if got, err := effectiveRDSMetadataRefreshInterval(0); err != nil || got != defaultRDSMetadataRefresh {
+		t.Fatalf("default duration should be used: got=%s err=%v", got, err)
+	}
+}
+
+func TestRDSMetadataCacheTTLLongerThanRefreshInterval(t *testing.T) {
+	if got := rdsMetadataCacheTTL(10 * time.Second); got != minRDSMetadataCacheTTL {
+		t.Fatalf("small refresh interval should use cache TTL floor: %s", got)
+	}
+	if got := rdsMetadataCacheTTL(10 * time.Minute); got != 30*time.Minute {
+		t.Fatalf("large refresh interval should keep cache longer than refresh: %s", got)
+	}
+}
+
 func TestEffectiveStatusRecentWindowClampsValues(t *testing.T) {
 	t.Setenv("STATUS_RECENT_WINDOW", "30s")
 	if got, err := effectiveStatusRecentWindow(0); err != nil || got != statuspage.MinRecentWindow {

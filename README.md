@@ -71,7 +71,7 @@ flowchart LR
   - Determines role from `session_id` (`MASTER_SESSION_ID` = Writer).
   - Instance endpoints are generated deterministically as `{instanceName}.{domainName}`.
   - RDS metadata is used only to enrich the AZ for zone-aware scheduling and `DbiResourceId` (physical instance identity); it is not used as the topology source of truth.
-  - A failed RDS metadata refresh does not drop a healthy Aurora SQL discovery to untrusted.
+  - RDS API failures or timeouts do not affect normal Discovery. RDS metadata is currently referenced only for zone-aware configuration.
 
 - **Rendering**
   - Creates one ConfigMap, Deployment, and Service per discovered Aurora DB instance.
@@ -186,7 +186,7 @@ The AWS docs recommend "listing individual instance nodes in a host-list" for th
 | Kubernetes | `>= 1.27` recommended | Uses `apiextensions.k8s.io/v1`, `apps/v1`, `rbac.authorization.k8s.io/v1`, and standard Service/Pod APIs. Lower versions may work but are not yet targeted. |
 | Aurora PostgreSQL | Aurora PostgreSQL with `aurora_replica_status()` | Discovery depends on `select server_id, session_id from aurora_replica_status()`. |
 | PgBouncer | `1.25.2` verified | Verified with PgBouncer `1.25.2`; provide your own image (see `spec.pgbouncer.image`). Other versions may work if the config options are compatible. |
-| AWS IAM | `rds:DescribeDBClusters`, `rds:DescribeDBInstances` | Needed to look up AZ and `DbiResourceId` when zone-aware placement is enabled. Even if the AWS API refresh fails, Aurora SQL discovery remains the topology source of truth. EKS IRSA recommended. |
+| AWS IAM | `rds:DescribeDBClusters`, `rds:DescribeDBInstances` | Needed only for the RDS metadata referenced by zone-aware configuration. RDS API failures or timeouts do not affect normal Discovery. EKS IRSA recommended. |
 | Network | Pod→Aurora connectivity | The operator and PgBouncer Pods must be able to reach the Aurora endpoints/ports. |
 
 ### Build / test tools
@@ -307,7 +307,6 @@ spec:
 | `spec.discovery.sslMode` | No | `require` | PostgreSQL SSL mode | SSL mode used by Aurora discovery and direct DB monitor probe connections. |
 | `spec.discovery.authSecretRef.name` | Yes | none | Secret name | Operator DB credential Secret. Used for Aurora discovery and the direct DB monitor probe. |
 | `spec.discovery.interval` | No | `3s` | Go duration | Minimum interval for Aurora topology discovery checks. Internal floor `1s`. |
-| `spec.discovery.metadataRefreshInterval` | No | `1m` | Go duration | Minimum interval for the auxiliary RDS AZ/`DbiResourceId` metadata refresh. Intentionally decoupled from the Aurora role discovery interval. |
 | `spec.discovery.timeout` | No | `3s` | Go duration | Timeout for discovery DB queries. |
 | `spec.discovery.failureThreshold` | No | `3` | count | Number of consecutive untrusted discoveries allowed before freezing instead of using cached topology. |
 
@@ -317,7 +316,7 @@ Endpoint generation rules:
 - Reader endpoint: `{clusterName}.cluster-ro-{domainName}`
 - Instance endpoint: `{dbInstanceIdentifier}.{domainName}`
 
-`spec.discovery.interval` defaults to `3s` to follow Aurora failover quickly. This only raises the Aurora topology query frequency. AWS RDS metadata calls for the auxiliary AZ/`DbiResourceId` data are controlled separately by `spec.discovery.metadataRefreshInterval`, which defaults to `1m`. Metadata refresh uses the same timeout as discovery DB queries. An RDS API failure or timeout only degrades zone-aware placement and physical-identity freshness; it does not invalidate a healthy `aurora_replica_status()` topology.
+`spec.discovery.interval` defaults to `3s` to follow Aurora failover quickly. This only raises the Aurora topology query frequency. AWS RDS metadata calls for the auxiliary AZ/`DbiResourceId` data are refreshed by the operator-level shared metadata worker. RDS API failures or timeouts do not affect normal Discovery. RDS metadata is currently referenced only for zone-aware configuration.
 
 The operator does not infer the AWS region from `spec.discovery.domainName`. RDS metadata lookups use the operator process flag `--aws-region`, so this region must match the region of the Aurora cluster that `domainName` points at. For multi-region operation, run a separate operator deployment per region.
 
@@ -450,15 +449,15 @@ The PgBouncer auth file Secret referenced by `spec.pgbouncer.authFileSecretRef`:
 The operator is a Deployment that watches a single namespace; the default manifest uses `replicas: 1` and enables leader election. The default manifest is [`deploy/operator.yaml`](deploy/operator.yaml), and the watch target is set by `--watch-namespace` (defaults to the operator Pod's namespace) and `--watch-names` (defaults to `*`, all CRs in that namespace).
 
 > [!IMPORTANT]
-> **Recommended deployment unit — up to 4–5 CRs per operator**
+> **Recommended deployment unit — up to 50 CRs per operator**
 >
-> Treat one operator managing roughly 20 Aurora instances across up to 4–5 CRs as the default deployment unit. Internal worker and rate-limit defaults are set conservatively for this scale, including full-timeout failure scenarios. Beyond that has not been tested yet. You can narrow an operator to specific CRs with `--watch-names`.
+> Treat one operator managing roughly 50 CRs and 100 backend instances as the default production-scale deployment unit. Discovery and monitor jobs are bounded by their own intervals, per-probe timeouts, and per-CR single-flight execution rather than low global worker or DB-probe QPS limits. You can narrow an operator to specific CRs with `--watch-names`.
 
 #### Operator flags
 
 These are manager process flags, not CR options.
 
-Only the public operational flags are listed below. Reconcile concurrency, scheduler workers, DB/RDS rate limits, and monitor job timeouts are managed by internal runtime defaults. Tune those advanced escape hatches only for larger clusters or explicit failure testing.
+Only the public operational flags are listed below. Scheduler discovery/monitor execution is per-CR single-flight and does not use user-tuned global worker pools. DB probe throughput is controlled by monitor intervals, per-probe timeout, and `--workers-per-cr`; the AWS API limiter remains intentionally low as a defensive circuit breaker against accidental hot-loop bugs.
 
 | Flag | Default | Unit | Description |
 |---|---|---|---|
@@ -466,8 +465,14 @@ Only the public operational flags are listed below. Reconcile concurrency, sched
 | `--health-probe-bind-address` | `:8081` | address | Health/readiness probe bind address. |
 | `--leader-elect` | `false` | boolean | Enable controller-runtime leader election. The default manifest passes this flag. |
 | `--aws-region` | `""` | AWS region | Single AWS region for RDS metadata lookups. Must match the Aurora region the managed CRs use. The default manifest sets `ap-northeast-2`. |
+| `--rds-metadata-refresh-interval` | `RDS_METADATA_REFRESH_INTERVAL` or `1m` | Go duration | Shared RDS metadata refresh interval for AZ/`DbiResourceId` and deleting fast-removal data. Values below `10s` are clamped to `10s`. |
+| `--aws-api-qps` | `AWS_API_QPS` or `1` | requests/sec | Defensive AWS API limiter for the shared metadata worker. Normal load is already bounded by cluster de-duplication and the refresh interval. |
+| `--aws-api-burst` | `AWS_API_BURST` or `1` | requests | Defensive AWS API limiter burst. |
+| `--workers-per-cr` | `WORKERS_PER_CR` or `4` | count | Maximum concurrent backend monitor probes within one CR. The monitor creates only the workers needed for the current backend count, so 1-2 instance clusters do not keep four idle workers. |
+| `--max-concurrent-reconciles` | `64` | count | Maximum concurrent reconciles across different CRs. controller-runtime still serializes the same workqueue key, so this raises cross-CR throughput without allowing concurrent reconciles for the same CR. |
 | `--watch-namespace` | `WATCH_NAMESPACE` | namespace | Namespace the manager watches. Required. Cluster-wide watch is not supported. The default manifest uses the operator Pod namespace. |
 | `--watch-names` | `WATCH_NAMES` | CR names | Optional `PgBouncerAurora` name filter. Empty/`*` watches all CRs in `--watch-namespace`; `a,b,c` or repeated `--watch-names=a --watch-names=b` watches only those CRs. |
+| `--reconcile-min-interval` | `RECONCILE_MIN_INTERVAL` or `1s` | Go duration | Minimum interval between heavy reconciles for the same CR. This is a per-CR guard, not a global reconcile throttle. |
 | `--status-refresh-min-interval` | `STATUS_REFRESH_MIN_INTERVAL` or `5s` | Go duration | Minimum refresh interval for the cached snapshot the `/status` dashboard shows. |
 | `--status-recent-window` | `STATUS_RECENT_WINDOW` or `1m` | Go duration | Time window used to highlight recently changed `/status` items. Values are clamped to `1m`–`24h`. |
 | `--zap-devel` | `false` | boolean | Enable development-mode logging. |

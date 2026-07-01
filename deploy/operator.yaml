@@ -38,6 +38,12 @@ spec:
             - --watch-names=$(WATCH_NAMES)
             - --status-refresh-min-interval=$(STATUS_REFRESH_MIN_INTERVAL)
             - --status-recent-window=$(STATUS_RECENT_WINDOW)
+            - --rds-metadata-refresh-interval=$(RDS_METADATA_REFRESH_INTERVAL)
+            - --aws-api-qps=$(AWS_API_QPS)
+            - --aws-api-burst=$(AWS_API_BURST)
+            - --workers-per-cr=$(WORKERS_PER_CR)
+            - --max-concurrent-reconciles=$(MAX_CONCURRENT_RECONCILES)
+            - --reconcile-min-interval=$(RECONCILE_MIN_INTERVAL)
           env:
             - name: WATCH_NAMESPACE
               valueFrom:
@@ -49,6 +55,18 @@ spec:
               value: "5s"
             - name: STATUS_RECENT_WINDOW
               value: "1m"
+            - name: RDS_METADATA_REFRESH_INTERVAL
+              value: "1m"
+            - name: AWS_API_QPS
+              value: "1"
+            - name: AWS_API_BURST
+              value: "1"
+            - name: WORKERS_PER_CR
+              value: "4"
+            - name: MAX_CONCURRENT_RECONCILES
+              value: "64"
+            - name: RECONCILE_MIN_INTERVAL
+              value: "1s"
             - name: POD_NAMESPACE
               valueFrom:
                 fieldRef:

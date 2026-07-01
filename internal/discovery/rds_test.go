@@ -10,7 +10,6 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/service/rds"
 	"github.com/aws/aws-sdk-go-v2/service/rds/types"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	v1alpha1 "github.com/case-88/pgbouncer-aurora-operator/api/v1alpha1"
 )
@@ -98,11 +97,6 @@ func TestRDSMetadataResolverCacheTTLDefaultAndOverride(t *testing.T) {
 	if got := (&RDSMetadataResolver{CacheTTL: 30 * time.Second}).cacheTTL(); got != 30*time.Second {
 		t.Fatalf("override cache ttl mismatch: %v", got)
 	}
-	resource := &v1alpha1.PgBouncerAurora{}
-	resource.Spec.Discovery.MetadataRefreshInterval = metav1.Duration{Duration: 10 * time.Minute}
-	if got := (&RDSMetadataResolver{CacheTTL: 30 * time.Second}).cacheTTL(resource); got != 10*time.Minute {
-		t.Fatalf("resource metadata refresh interval should win: %v", got)
-	}
 }
 
 func TestRDSMetadataResolverCachesZoneMetadataWithoutEndpoint(t *testing.T) {
@@ -134,7 +128,7 @@ func TestRDSMetadataResolverCachesZoneMetadataWithoutEndpoint(t *testing.T) {
 	}
 }
 
-func TestRDSMetadataResolverDoesNotCacheMissingAZ(t *testing.T) {
+func TestRDSMetadataResolverCachesMissingAZUntilTTL(t *testing.T) {
 	az := "ap-northeast-2a"
 	addr := "db-1.example"
 	now := time.Date(2026, 6, 22, 1, 0, 0, 0, time.UTC)
@@ -157,15 +151,23 @@ func TestRDSMetadataResolverDoesNotCacheMissingAZ(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if second["db-1"].AvailabilityZone != az {
-		t.Fatalf("missing zone metadata must be re-fetched immediately: %#v", second["db-1"])
+	if second["db-1"].AvailabilityZone != "" {
+		t.Fatalf("missing zone metadata should be cached until TTL: %#v", second["db-1"])
 	}
-	if !reflect.DeepEqual(client.seenInstances, []string{rdsTestClusterName, rdsTestClusterName}) {
-		t.Fatalf("missing zone metadata should not be cached, seen = %#v", client.seenInstances)
+	if !reflect.DeepEqual(client.seenInstances, []string{rdsTestClusterName}) {
+		t.Fatalf("missing zone metadata should be cached, seen = %#v", client.seenInstances)
+	}
+	now = now.Add(2 * time.Minute)
+	third, err := resolver.Resolve(context.Background(), resource, []string{"db-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if third["db-1"].AvailabilityZone != az {
+		t.Fatalf("missing zone metadata should refresh after TTL: %#v", third["db-1"])
 	}
 }
 
-func TestRDSMetadataResolverDoesNotCacheMissingDbiResourceId(t *testing.T) {
+func TestRDSMetadataResolverCachesMissingDbiResourceIdUntilTTL(t *testing.T) {
 	az := "ap-northeast-2a"
 	now := time.Date(2026, 6, 22, 1, 0, 0, 0, time.UTC)
 	client := &fakeRDSClient{data: map[string]types.DBInstance{
@@ -187,11 +189,11 @@ func TestRDSMetadataResolverDoesNotCacheMissingDbiResourceId(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(second) != 0 {
-		t.Fatalf("metadata missing dbi resource id must not be cached: %#v", second)
+	if second["db-1"].DbiResourceId != "" {
+		t.Fatalf("missing dbi resource id metadata should be cached until TTL: %#v", second["db-1"])
 	}
-	if !reflect.DeepEqual(client.seenInstances, []string{rdsTestClusterName, rdsTestClusterName}) {
-		t.Fatalf("missing dbi resource id metadata should not be cached, seen = %#v", client.seenInstances)
+	if !reflect.DeepEqual(client.seenInstances, []string{rdsTestClusterName}) {
+		t.Fatalf("missing dbi resource id metadata should be cached, seen = %#v", client.seenInstances)
 	}
 }
 
@@ -297,7 +299,7 @@ func TestRDSMetadataResolverBatchLookupAndRateLimit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if limiter.calls != 1 {
+	if limiter.calls != 2 {
 		t.Fatalf("limiter calls = %d", limiter.calls)
 	}
 	if !reflect.DeepEqual(client.seenInstances, []string{rdsTestClusterName}) {
@@ -313,6 +315,75 @@ func TestRDSMetadataResolverReturnsLimiterError(t *testing.T) {
 	resolver := RDSMetadataResolver{Client: &fakeRDSClient{}, RateLimiter: limiter}
 	if _, err := resolver.Resolve(context.Background(), rdsSampleResource(), []string{"db-1"}); err == nil {
 		t.Fatal("expected limiter error")
+	}
+}
+
+func TestRDSMetadataResolverCachedOnlyDoesNotCallAWSOnCacheMiss(t *testing.T) {
+	client := &fakeRDSClient{data: map[string]types.DBInstance{}}
+	resolver := RDSMetadataResolver{Client: client, CachedOnly: true}
+	metadata, err := resolver.Resolve(context.Background(), rdsSampleResource(), []string{"db-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(metadata) != 0 {
+		t.Fatalf("cache miss should return empty metadata: %#v", metadata)
+	}
+	if len(client.seenClusters) != 0 || len(client.seenInstances) != 0 {
+		t.Fatalf("cached-only resolve must not call AWS: clusters=%#v instances=%#v", client.seenClusters, client.seenInstances)
+	}
+}
+
+func TestRDSMetadataResolverRefreshClusterRequiresClient(t *testing.T) {
+	_, err := (&RDSMetadataResolver{}).RefreshCluster(context.Background(), rdsTestClusterName)
+	if err == nil || err.Error() != "rds client is nil" {
+		t.Fatalf("expected nil client error, got %v", err)
+	}
+}
+
+func TestRDSMetadataResolverCachedOnlyUsesSharedCache(t *testing.T) {
+	az := "ap-northeast-2a"
+	client := &fakeRDSClient{data: map[string]types.DBInstance{
+		"db-1": {DBInstanceIdentifier: stringPtr("db-1"), DBInstanceStatus: stringPtr("available"), AvailabilityZone: &az, DbiResourceId: stringPtr("dbi-db-1")},
+	}}
+	resolver := RDSMetadataResolver{Client: client, CachedOnly: true}
+	if _, err := resolver.RefreshCluster(context.Background(), rdsTestClusterName); err != nil {
+		t.Fatal(err)
+	}
+	client.data = map[string]types.DBInstance{}
+	metadata, err := resolver.Resolve(context.Background(), rdsSampleResource(), []string{"db-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if metadata["db-1"].AvailabilityZone != az {
+		t.Fatalf("cached metadata = %#v", metadata)
+	}
+	if !reflect.DeepEqual(client.seenInstances, []string{rdsTestClusterName}) {
+		t.Fatalf("cached-only resolve should not refresh, seen = %#v", client.seenInstances)
+	}
+}
+
+func TestRDSMetadataResolverCachedOnlyOmitsReappearedMissingInstanceMetadata(t *testing.T) {
+	az := "ap-northeast-2a"
+	client := &fakeRDSClient{data: map[string]types.DBInstance{
+		"db-1": {DBInstanceIdentifier: stringPtr("db-1"), DBInstanceStatus: stringPtr("deleting"), AvailabilityZone: &az, DbiResourceId: stringPtr("dbi-db-1")},
+		"db-2": {DBInstanceIdentifier: stringPtr("db-2"), DBInstanceStatus: stringPtr("available"), AvailabilityZone: &az, DbiResourceId: stringPtr("dbi-db-2")},
+	}}
+	resolver := RDSMetadataResolver{Client: client, CachedOnly: true}
+	if _, err := resolver.RefreshCluster(context.Background(), rdsTestClusterName); err != nil {
+		t.Fatal(err)
+	}
+	resource := rdsSampleResource()
+	resource.Status.MissingInstances = []v1alpha1.MissingInstanceStatus{{InstanceName: "db-1"}}
+
+	metadata, err := resolver.Resolve(context.Background(), resource, []string{"db-1", "db-2"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := metadata["db-1"]; ok {
+		t.Fatalf("reappeared missing instance should not use stale metadata: %#v", metadata["db-1"])
+	}
+	if metadata["db-2"].AvailabilityZone != az {
+		t.Fatalf("unrelated cached metadata should be preserved: %#v", metadata)
 	}
 }
 
