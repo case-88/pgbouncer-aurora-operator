@@ -147,6 +147,9 @@ func assertEnum(t *testing.T, schema map[string]any, names ...string) {
 	if !ok {
 		t.Fatalf("schema has no enum: %#v", schema)
 	}
+	if len(values) != len(names) {
+		t.Fatalf("enum length mismatch: got %v want %v", values, names)
+	}
 	seen := make(map[string]bool, len(values))
 	for _, value := range values {
 		name, ok := value.(string)
