@@ -42,6 +42,7 @@ const (
 	defaultAWSAPIBurst             = 1
 	defaultWorkersPerCR            = 4
 	defaultRDSMetadataRefresh      = time.Minute
+	minRDSMetadataCacheTTL         = 5 * time.Minute
 	minRDSMetadataRefresh          = 10 * time.Second
 )
 
@@ -171,7 +172,7 @@ func main() {
 	if err != nil {
 		ctrl.Log.Error(err, "unable to initialize RDS metadata resolver; zone-aware AZ enrichment will be unavailable")
 	} else {
-		metadataResolver.CacheTTL = rdsMetadataRefreshInterval
+		metadataResolver.CacheTTL = rdsMetadataCacheTTL(rdsMetadataRefreshInterval)
 		metadataResolver.CachedOnly = true
 	}
 	if metadataResolver != nil && awsAPIQPS > 0 && awsAPIBurst > 0 {
@@ -373,6 +374,14 @@ func effectiveRDSMetadataRefreshInterval(flagValue time.Duration) (time.Duration
 		return minRDSMetadataRefresh, nil
 	}
 	return value, nil
+}
+
+func rdsMetadataCacheTTL(refreshInterval time.Duration) time.Duration {
+	ttl := 3 * refreshInterval
+	if ttl < minRDSMetadataCacheTTL {
+		return minRDSMetadataCacheTTL
+	}
+	return ttl
 }
 
 func effectiveStatusRecentWindow(flagValue time.Duration) (time.Duration, error) {

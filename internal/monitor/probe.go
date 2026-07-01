@@ -22,13 +22,16 @@ type ProbeMonitor struct {
 	Client       client.Client
 	DBFactory    postgres.DBFactory
 	WorkersPerCR int
+	JobTimeout   time.Duration
 }
 
 const defaultWorkersPerCR = 4
 
 func (m ProbeMonitor) Check(ctx context.Context, resource *v1alpha1.PgBouncerAurora, instances []domain.InstanceObservation) (map[string]domain.HealthStatus, error) {
 	instances = enabledInstances(resource, instances)
-	readyByInstance, err := m.readyPodsByInstance(ctx, resource)
+	jobCtx, cancel := context.WithTimeout(ctx, m.jobTimeout(resource, len(instances)))
+	defer cancel()
+	readyByInstance, err := m.readyPodsByInstance(jobCtx, resource)
 	if err != nil {
 		return nil, err
 	}
@@ -49,7 +52,7 @@ func (m ProbeMonitor) Check(ctx context.Context, resource *v1alpha1.PgBouncerAur
 	if len(readyInstances) == 0 {
 		return out, nil
 	}
-	creds, err := m.credentials(ctx, resource)
+	creds, err := m.credentials(jobCtx, resource)
 	if err != nil {
 		return nil, err
 	}
@@ -62,15 +65,15 @@ func (m ProbeMonitor) Check(ctx context.Context, resource *v1alpha1.PgBouncerAur
 		go func() {
 			defer wg.Done()
 			for instance := range jobs {
-				status := m.checkInstance(ctx, resource, factory, creds, instance)
-				if err := ctx.Err(); err != nil {
+				status := m.checkInstance(jobCtx, resource, factory, creds, instance)
+				if err := jobCtx.Err(); err != nil {
 					results <- probeResult{name: instance.Name, err: fmt.Errorf("monitor job canceled: %w", err)}
 					return
 				}
 				status.ReadyReplicas = int32(readyByInstance[instance.Name])
 				select {
 				case results <- probeResult{name: instance.Name, status: status}:
-				case <-ctx.Done():
+				case <-jobCtx.Done():
 					return
 				}
 			}
@@ -81,7 +84,7 @@ func (m ProbeMonitor) Check(ctx context.Context, resource *v1alpha1.PgBouncerAur
 		for _, instance := range readyInstances {
 			select {
 			case jobs <- instance:
-			case <-ctx.Done():
+			case <-jobCtx.Done():
 				return
 			}
 		}
@@ -108,8 +111,8 @@ func (m ProbeMonitor) Check(ctx context.Context, resource *v1alpha1.PgBouncerAur
 			}
 			out[result.name] = result.status
 			delete(remaining, result.name)
-		case <-ctx.Done():
-			return nil, fmt.Errorf("monitor job canceled: %w", ctx.Err())
+		case <-jobCtx.Done():
+			return nil, fmt.Errorf("monitor job canceled: %w", jobCtx.Err())
 		}
 	}
 	return out, nil
@@ -144,6 +147,19 @@ type probeResult struct {
 	err    error
 }
 
+func (m ProbeMonitor) jobTimeout(resource *v1alpha1.PgBouncerAurora, instanceCount int) time.Duration {
+	if m.JobTimeout > 0 {
+		return m.JobTimeout
+	}
+	timeout := monitorProbeTimeout(resource)
+	concurrency := m.workersPerCR(instanceCount)
+	batches := 1
+	if instanceCount > 0 && concurrency > 0 {
+		batches = (instanceCount + concurrency - 1) / concurrency
+	}
+	return clampDuration(time.Duration(batches)*timeout+2*time.Second, 8*time.Second, 30*time.Second)
+}
+
 func (m ProbeMonitor) workersPerCR(readyCount int) int {
 	limit := m.WorkersPerCR
 	if limit <= 0 {
@@ -160,6 +176,16 @@ func monitorProbeTimeout(resource *v1alpha1.PgBouncerAurora) time.Duration {
 		return resource.Spec.Monitor.Timeout.Duration
 	}
 	return 3 * time.Second
+}
+
+func clampDuration(value, minValue, maxValue time.Duration) time.Duration {
+	if value < minValue {
+		return minValue
+	}
+	if value > maxValue {
+		return maxValue
+	}
+	return value
 }
 
 func (m ProbeMonitor) readyPodsByInstance(ctx context.Context, resource *v1alpha1.PgBouncerAurora) (map[string]int, error) {

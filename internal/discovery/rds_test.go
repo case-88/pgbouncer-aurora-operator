@@ -333,6 +333,13 @@ func TestRDSMetadataResolverCachedOnlyDoesNotCallAWSOnCacheMiss(t *testing.T) {
 	}
 }
 
+func TestRDSMetadataResolverRefreshClusterRequiresClient(t *testing.T) {
+	_, err := (&RDSMetadataResolver{}).RefreshCluster(context.Background(), rdsTestClusterName)
+	if err == nil || err.Error() != "rds client is nil" {
+		t.Fatalf("expected nil client error, got %v", err)
+	}
+}
+
 func TestRDSMetadataResolverCachedOnlyUsesSharedCache(t *testing.T) {
 	az := "ap-northeast-2a"
 	client := &fakeRDSClient{data: map[string]types.DBInstance{

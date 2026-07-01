@@ -170,6 +170,15 @@ func TestEffectiveRDSMetadataRefreshIntervalClampsTooSmallValues(t *testing.T) {
 	}
 }
 
+func TestRDSMetadataCacheTTLLongerThanRefreshInterval(t *testing.T) {
+	if got := rdsMetadataCacheTTL(10 * time.Second); got != minRDSMetadataCacheTTL {
+		t.Fatalf("small refresh interval should use cache TTL floor: %s", got)
+	}
+	if got := rdsMetadataCacheTTL(10 * time.Minute); got != 30*time.Minute {
+		t.Fatalf("large refresh interval should keep cache longer than refresh: %s", got)
+	}
+}
+
 func TestEffectiveStatusRecentWindowClampsValues(t *testing.T) {
 	t.Setenv("STATUS_RECENT_WINDOW", "30s")
 	if got, err := effectiveStatusRecentWindow(0); err != nil || got != statuspage.MinRecentWindow {

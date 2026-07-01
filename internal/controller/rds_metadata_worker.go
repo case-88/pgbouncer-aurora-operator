@@ -19,13 +19,16 @@ type RDSMetadataRefresher interface {
 }
 
 type RDSMetadataWorker struct {
-	Client    client.Client
-	Refresher RDSMetadataRefresher
-	Namespace string
-	WatchName string
-	Interval  time.Duration
-	Log       logr.Logger
+	Client         client.Client
+	Refresher      RDSMetadataRefresher
+	Namespace      string
+	WatchName      string
+	Interval       time.Duration
+	ClusterTimeout time.Duration
+	Log            logr.Logger
 }
+
+const defaultRDSMetadataClusterTimeout = 10 * time.Second
 
 func (w *RDSMetadataWorker) Start(ctx context.Context) error {
 	if w.Client == nil || w.Refresher == nil || strings.TrimSpace(w.Namespace) == "" {
@@ -73,7 +76,10 @@ func (w *RDSMetadataWorker) refresh(ctx context.Context) {
 		if ctx.Err() != nil {
 			return
 		}
-		if _, err := w.Refresher.RefreshCluster(ctx, cluster); err != nil {
+		clusterCtx, cancel := context.WithTimeout(ctx, w.clusterTimeout())
+		_, err := w.Refresher.RefreshCluster(clusterCtx, cluster)
+		cancel()
+		if err != nil {
 			failures++
 			w.Log.Error(err, "rds metadata cluster refresh failed", "cluster", cluster)
 		}
@@ -115,4 +121,11 @@ func (w *RDSMetadataWorker) interval() time.Duration {
 		return w.Interval
 	}
 	return time.Minute
+}
+
+func (w *RDSMetadataWorker) clusterTimeout() time.Duration {
+	if w.ClusterTimeout > 0 {
+		return w.ClusterTimeout
+	}
+	return defaultRDSMetadataClusterTimeout
 }

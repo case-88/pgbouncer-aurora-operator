@@ -52,6 +52,13 @@ func (f *blockingDBFactory) Open(ctx context.Context, info postgres.ConnInfo) (*
 	return f.dbs[info.Host], nil
 }
 
+type contextBlockingDBFactory struct{}
+
+func (f contextBlockingDBFactory) Open(ctx context.Context, info postgres.ConnInfo) (*sql.DB, error) {
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
 func TestProbeMonitorDirectDBHealthy(t *testing.T) {
 	resource, c := monitorTestResource(t)
 	db, mock := newMockDB(t)
@@ -293,6 +300,21 @@ func TestProbeMonitorWorkersPerCROverride(t *testing.T) {
 		if err := mock.ExpectationsWereMet(); err != nil {
 			t.Fatal(err)
 		}
+	}
+}
+
+func TestProbeMonitorCheckHasJobScopedDeadline(t *testing.T) {
+	resource, c := monitorTestResource(t)
+	monitor := ProbeMonitor{Client: c, DBFactory: contextBlockingDBFactory{}, JobTimeout: 20 * time.Millisecond}
+	startedAt := time.Now()
+
+	_, err := monitor.Check(context.Background(), resource, []domain.InstanceObservation{{Name: "db-1", Endpoint: "db-1.example", Role: domain.RoleWriter}})
+
+	if err == nil {
+		t.Fatalf("expected monitor timeout")
+	}
+	if elapsed := time.Since(startedAt); elapsed > time.Second {
+		t.Fatalf("monitor did not respect job timeout, elapsed=%s", elapsed)
 	}
 }
 

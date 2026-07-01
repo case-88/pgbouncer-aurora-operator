@@ -114,6 +114,9 @@ func (r *RDSMetadataResolver) Resolve(ctx context.Context, resource *v1alpha1.Pg
 }
 
 func (r *RDSMetadataResolver) RefreshCluster(ctx context.Context, clusterName string) (map[string]InstanceMetadata, error) {
+	if r.Client == nil {
+		return nil, fmt.Errorf("rds client is nil")
+	}
 	clusterName = strings.TrimSpace(clusterName)
 	if clusterName == "" {
 		return nil, fmt.Errorf("clusterName is required for RDS metadata refresh")
@@ -180,10 +183,6 @@ func (r *RDSMetadataResolver) cacheTTL() time.Duration {
 		return r.CacheTTL
 	}
 	return time.Minute
-}
-
-func reappearedInstanceRequested(resource *v1alpha1.PgBouncerAurora, requestedNames []string) bool {
-	return len(reappearedInstanceNames(resource, requestedNames)) > 0
 }
 
 func reappearedInstanceNames(resource *v1alpha1.PgBouncerAurora, requestedNames []string) map[string]struct{} {
