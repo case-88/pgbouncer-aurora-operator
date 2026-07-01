@@ -1,7 +1,7 @@
 # Contributing
 
-This project is in public alpha. The `PgBouncerAurora` API is `v1alpha1`, and
-breaking changes may happen before `v0.1.0`.
+This project publishes versioned releases. The `PgBouncerAurora` API is
+`v1alpha1`.
 
 ## Pull Requests
 
@@ -43,24 +43,24 @@ Release tags use:
 vMAJOR.MINOR.PATCH[-PRERELEASE]
 ```
 
-Current pre-release flow is alpha-only:
+Examples:
 
-- `v0.1.0-alpha`
-- `v0.1.0-alpha.1`
-- `v0.1.0-alpha.2`
 - `v0.1.0`
+- `v0.1.1`
+- `v0.2.0`
+- `v0.2.0-alpha.1`
 
 Rules:
 
 - `v0.x` is unstable; breaking changes are allowed but must be documented.
 - Do not move or reuse released Git tags.
 - Do not push different images to an existing release image tag.
-- Do not publish `latest` during alpha.
+- Prefer explicit version tags in documentation and examples.
 - Keep Git tag, GitHub Release, Quay image tag, and raw manifest URLs aligned.
 
-## When To Cut A New Alpha
+## When To Cut A New Release
 
-Cut a new alpha when an installable artifact changes:
+Cut a new release when an installable artifact changes:
 
 - operator code
 - CRD schema
@@ -79,8 +79,8 @@ README wording-only changes usually do not need a new release.
 5. Build and push the multi-arch Quay image from the tagged commit.
 6. Verify the image with `docker buildx imagetools inspect`.
 7. Verify the raw CRD URL for the tag returns HTTP 200.
-8. Create a GitHub pre-release for the tag, including the image tag/digest and
-   raw CRD URL.
+8. Create a GitHub Release for the tag, including the image tag/digest and raw
+   CRD URL.
 
 ## Security
 
