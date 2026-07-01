@@ -717,13 +717,37 @@ func (r *PgBouncerAuroraReconciler) deploymentTemplateDrifted(ctx context.Contex
 		if existing == nil {
 			continue
 		}
-		if int32Value(existing.Spec.Replicas) != int32Value(expected.Spec.Replicas) ||
+		if deploymentDbiMetadataDrifted(existing, expected) ||
+			int32Value(existing.Spec.Replicas) != int32Value(expected.Spec.Replicas) ||
 			existing.Spec.Strategy.Type != expected.Spec.Strategy.Type ||
 			!podTemplateSemanticallyEqual(existing.Spec.Template, expected.Spec.Template) {
 			return true, nil
 		}
 	}
 	return false, nil
+}
+
+func deploymentDbiMetadataDrifted(existing *appsv1.Deployment, expected *appsv1.Deployment) bool {
+	return deploymentDbiLabelBackfillNeeded(existing, expected) || deploymentDbiIdentityChanged(existing, expected)
+}
+
+func deploymentDbiLabelBackfillNeeded(existing *appsv1.Deployment, expected *appsv1.Deployment) bool {
+	existingValue := deploymentDbiLabel(existing)
+	expectedValue := deploymentDbiLabel(expected)
+	return existingValue == "" && expectedValue != ""
+}
+
+func deploymentDbiIdentityChanged(existing *appsv1.Deployment, expected *appsv1.Deployment) bool {
+	existingValue := deploymentDbiLabel(existing)
+	expectedValue := deploymentDbiLabel(expected)
+	return existingValue != "" && expectedValue != "" && existingValue != expectedValue
+}
+
+func deploymentDbiLabel(deployment *appsv1.Deployment) string {
+	if deployment == nil || deployment.Labels == nil {
+		return ""
+	}
+	return strings.TrimSpace(deployment.Labels[render.LabelDbiResourceID])
 }
 
 func podTemplateSemanticallyEqual(existing corev1.PodTemplateSpec, expected corev1.PodTemplateSpec) bool {
@@ -1589,6 +1613,7 @@ func emptyObjectFor(object client.Object) (client.Object, error) {
 }
 
 func copyDesired(existing client.Object, desired client.Object) {
+	existingDbiLabel, existingDbiAnnotation := deploymentDbiIdentity(existing)
 	existing.SetLabels(desired.GetLabels())
 	existing.SetAnnotations(desired.GetAnnotations())
 	existing.SetOwnerReferences(desired.GetOwnerReferences())
@@ -1609,7 +1634,46 @@ func copyDesired(existing client.Object, desired client.Object) {
 			restartToken = target.Spec.Template.Annotations[restartedAtAnnotation]
 		}
 		target.Spec = source.Spec
+		preserveDeploymentDbiIdentity(target, source, existingDbiLabel, existingDbiAnnotation)
 		preserveRestartAnnotation(target, restartToken)
+	}
+}
+
+func deploymentDbiIdentity(object client.Object) (string, string) {
+	deployment, ok := object.(*appsv1.Deployment)
+	if !ok {
+		return "", ""
+	}
+	label := ""
+	if deployment.Labels != nil {
+		label = strings.TrimSpace(deployment.Labels[render.LabelDbiResourceID])
+	}
+	annotation := ""
+	if deployment.Annotations != nil {
+		annotation = strings.TrimSpace(deployment.Annotations[render.AnnotationDbiResourceID])
+	}
+	return label, annotation
+}
+
+func preserveDeploymentDbiIdentity(target *appsv1.Deployment, source *appsv1.Deployment, previousLabel string, previousAnnotation string) {
+	if target == nil || source == nil {
+		return
+	}
+	if deploymentDbiLabel(source) == "" && previousLabel != "" {
+		if target.Labels == nil {
+			target.Labels = map[string]string{}
+		}
+		target.Labels[render.LabelDbiResourceID] = previousLabel
+	}
+	sourceAnnotation := ""
+	if source.Annotations != nil {
+		sourceAnnotation = strings.TrimSpace(source.Annotations[render.AnnotationDbiResourceID])
+	}
+	if sourceAnnotation == "" && previousAnnotation != "" {
+		if target.Annotations == nil {
+			target.Annotations = map[string]string{}
+		}
+		target.Annotations[render.AnnotationDbiResourceID] = previousAnnotation
 	}
 }
 

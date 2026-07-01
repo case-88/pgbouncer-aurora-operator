@@ -24,6 +24,7 @@ const (
 	LabelServiceRole        = "pgbouncer-aurora.io/service-role"
 	LabelWriter             = "pgbouncer-aurora.io/member-writer"
 	LabelReader             = "pgbouncer-aurora.io/member-reader"
+	LabelDbiResourceID      = "pgbouncer-aurora.io/dbi-resource-id"
 	LabelAppName            = "app.kubernetes.io/name"
 	LabelAppComponent       = "app.kubernetes.io/component"
 	LabelAppInstance        = "app.kubernetes.io/instance"
@@ -32,7 +33,7 @@ const (
 	AnnotationClusterName   = "pgbouncer-aurora.io/cluster-name"
 	AnnotationConfigHash    = "pgbouncer-aurora.io/config-hash"
 	AnnotationAuthFileHash  = "pgbouncer-aurora.io/auth-file-hash"
-	AnnotationDbiResourceID = "pgbouncer-aurora.io/dbi-resource-id"
+	AnnotationDbiResourceID = LabelDbiResourceID
 	ManagedByValue          = "pgbouncer-aurora-operator"
 	AppNameValue            = "pgbouncer-aurora"
 	AppComponentValue       = "pgbouncer"
@@ -54,9 +55,12 @@ func InstanceDeployment(input InstanceRenderInput) *appsv1.Deployment {
 	replicas := instance.Replicas
 	listenPort := ListenPort(owner.Spec)
 	labels := mergeMap(owner.Spec.PgBouncer.Labels, baseLabels(owner.Name, instance.Name))
+	delete(labels, LabelDbiResourceID)
 	deploymentLabels := cloneMap(labels)
 	deploymentLabels[LabelRole] = string(instance.Role)
-	annotations := mergeMap(owner.Spec.PgBouncer.Annotations, deploymentAnnotations(owner, instance.InstanceObservation, input.AuthFileHash))
+	applyDbiResourceIDLabel(deploymentLabels, instance.DbiResourceId)
+	annotations := mergeMap(owner.Spec.PgBouncer.Annotations, podTemplateAnnotations(owner, instance.InstanceObservation, input.AuthFileHash))
+	delete(annotations, AnnotationDbiResourceID)
 	selector := baseLabels(owner.Name, instance.Name)
 	podSpec := podSpec(owner, instance.Name, listenPort)
 
@@ -330,16 +334,30 @@ func clusterAnnotations(clusterName string) map[string]string {
 }
 
 func deploymentAnnotations(owner *v1alpha1.PgBouncerAurora, instance domain.InstanceObservation, authFileHash string) map[string]string {
+	annotations := podTemplateAnnotations(owner, instance, authFileHash)
+	if strings.TrimSpace(instance.DbiResourceId) != "" {
+		annotations[AnnotationDbiResourceID] = strings.TrimSpace(instance.DbiResourceId)
+	}
+	return annotations
+}
+
+func podTemplateAnnotations(owner *v1alpha1.PgBouncerAurora, instance domain.InstanceObservation, authFileHash string) map[string]string {
 	annotations := clusterAnnotations(owner.Name)
 	annotations[AnnotationConfigHash] = hashString(PgBouncerINI(owner.Spec, instance))
 	if authFileHash == "" {
 		authFileHash = hashString(owner.Spec.PgBouncer.AuthFileSecretRef.Name)
 	}
 	annotations[AnnotationAuthFileHash] = authFileHash
-	if strings.TrimSpace(instance.DbiResourceId) != "" {
-		annotations[AnnotationDbiResourceID] = strings.TrimSpace(instance.DbiResourceId)
-	}
 	return annotations
+}
+
+func applyDbiResourceIDLabel(labels map[string]string, dbiResourceID string) {
+	value := strings.TrimSpace(dbiResourceID)
+	if value == "" {
+		delete(labels, LabelDbiResourceID)
+		return
+	}
+	labels[LabelDbiResourceID] = value
 }
 
 func hashString(value string) string {
