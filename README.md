@@ -10,6 +10,28 @@
 
 > Status: public alpha — `v0.1.0-alpha.1` (CRD API `v1alpha1`). A multi-arch image (`linux/amd64`, `linux/arm64`) is published on Quay and raw Kubernetes manifests ship under `deploy/`. APIs and manifests may still change before a stable release; a Helm chart is not available yet.
 
+## Table of Contents
+
+- [Why it exists](#why-it-exists)
+- [What it does](#what-it-does)
+- [Limitations and operating assumptions](#limitations-and-operating-assumptions)
+  - [Recommended application settings](#recommended-application-settings)
+  - [Application connection guide](#application-connection-guide)
+- [Requirements](#requirements)
+- [Installation](#installation)
+- [Configuration](#configuration)
+  - [Custom Resource](#custom-resource)
+  - [Secret](#secret)
+  - [Operator](#operator)
+- [Status dashboard](#status-dashboard)
+- [Zone-aware placement](#zone-aware-placement)
+- [Writer and Reader Service membership convergence performance](#writer-and-reader-service-membership-convergence-performance)
+- [Reader Service load balancing](#reader-service-load-balancing)
+- [Resource label management](#resource-label-management)
+- [Development](#development)
+- [Contributing](#contributing)
+- [License](#license)
+
 ## Why it exists
 
 A typical "PgBouncer in front of Aurora" setup has the following limitations.
@@ -61,7 +83,7 @@ flowchart LR
 - **Fast Writer failover detection** — once trusted Discovery confirms the new Writer and its PgBouncer Pod is Ready, the Writer Service membership is switched first without waiting for the next Monitor success (fast path).
 - **Zone-aware placement** — places each PgBouncer Pod on a node in the same AZ as its Aurora instance, preferred or required.
 - **Safety mechanisms** — last-known-good retention and freeze keep the last verified healthy traffic state when observations are uncertain.
-- **Built-in status dashboard** — the operator serves a `/status` web UI and `/status.json` that show managed CRs, topology, Writer/Reader membership, and conditions at a glance ([Status dashboard](#status-dashboard-status)).
+- **Built-in status dashboard** — the operator serves a `/status` web UI and `/status.json` that show managed CRs, topology, Writer/Reader membership, and conditions at a glance ([Status dashboard](#status-dashboard)).
 
 ### How it works
 
@@ -498,7 +520,7 @@ Permissions the Role grants:
 
 The operator Pod runs as the `pgbouncer-aurora-operator` ServiceAccount ([`deploy/serviceaccount.yaml`](deploy/serviceaccount.yaml)) and gets its permissions only through the RoleBinding above. The PgBouncer Pod's ServiceAccount is separate and set, when needed, via `spec.pgbouncer.serviceAccountName` (unset by default).
 
-## Status dashboard (/status)
+## Status dashboard
 
 The operator provides a built-in web dashboard to view runtime state at a glance. It is served directly by the operator process, with no separate deployment.
 
@@ -535,7 +557,7 @@ If an Aurora instance and the PgBouncer Pod that serves it are in different AZs,
 - **Relationship with user scheduling constraints** — zone-aware is additive to existing settings and does not replace user-specified `nodeSelector`, `affinity`, or `topologySpreadConstraints`. The operator detects common cases that may conflict with the zone-aware intent — a strict `nodeSelector`, a required `nodeAffinity`, or zone pinning + topology spread on the same key — and handles them per `conflictPolicy` (`Warn`/`Fail`/`Ignore`). It cannot prove every scheduler outcome, so also monitor the Kubernetes scheduling state.
 - **Replica spreading** — to spread the PgBouncer replicas of the same Aurora instance across nodes, use the native `spec.pgbouncer.topologySpreadConstraints` (there is no operator-specific `replicaSpread` option). The roles are split: zone nodeAffinity handles AZ alignment, and topologySpreadConstraints handles replica spreading.
 
-## Writer/Reader Service membership convergence performance
+## Writer and Reader Service membership convergence performance
 
 This operator's performance metric is "how fast an Aurora role/topology change is reflected into Writer/Reader Service membership." Overall failover performance cannot be described by a single number — role/topology change, Service membership update, and application query recovery are different stages.
 
