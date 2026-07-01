@@ -70,6 +70,10 @@ func (m ProbeMonitor) Check(ctx context.Context, resource *v1alpha1.PgBouncerAur
 					results <- probeResult{name: instance.Name, err: fmt.Errorf("monitor job canceled: %w", err)}
 					return
 				}
+				if monitorStatusIsConfigurationFailure(status) {
+					results <- probeResult{name: instance.Name, err: fmt.Errorf("%s: %s", instance.Name, status.Reason)}
+					return
+				}
 				status.ReadyReplicas = int32(readyByInstance[instance.Name])
 				select {
 				case results <- probeResult{name: instance.Name, status: status}:
@@ -239,9 +243,36 @@ func (m ProbeMonitor) checkInstance(ctx context.Context, resource *v1alpha1.PgBo
 	defer cancel()
 
 	if err := directProbe(probeCtx, resource, factory, creds, instance); err != nil {
+		if monitorProbeConfigurationError(err) {
+			return domain.HealthStatus{Healthy: false, Reason: "monitor configuration failed: " + redactCredentialValue(err.Error(), creds.Password)}
+		}
 		return domain.HealthStatus{Healthy: false, Reason: "direct db probe failed: " + redactCredentialValue(err.Error(), creds.Password)}
 	}
 	return domain.HealthStatus{Healthy: true, Reason: "healthy"}
+}
+
+func monitorStatusIsConfigurationFailure(status domain.HealthStatus) bool {
+	return strings.HasPrefix(status.Reason, "monitor configuration failed:")
+}
+
+func monitorProbeConfigurationError(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	for _, pattern := range []string{
+		"password authentication failed",
+		"authentication failed",
+		"no pg_hba.conf entry",
+		"certificate",
+		"tls",
+		"ssl",
+	} {
+		if strings.Contains(message, pattern) {
+			return true
+		}
+	}
+	return false
 }
 
 func redactCredentialValue(message, secret string) string {

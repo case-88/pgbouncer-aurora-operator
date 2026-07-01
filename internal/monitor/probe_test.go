@@ -318,6 +318,30 @@ func TestProbeMonitorCheckHasJobScopedDeadline(t *testing.T) {
 	}
 }
 
+func TestProbeMonitorTreatsAuthFailureAsMonitorError(t *testing.T) {
+	resource, c := monitorTestResource(t)
+	db, mock := newMockDB(t)
+	defer db.Close()
+	mock.ExpectQuery("select pg_is_in_recovery").WillReturnError(fmt.Errorf(`password authentication failed for user "svc"`))
+	factory := &mapDBFactory{dbs: map[string]*sql.DB{"db-1.example": db}}
+	monitor := ProbeMonitor{Client: c, DBFactory: factory}
+
+	_, err := monitor.Check(context.Background(), resource, []domain.InstanceObservation{{Name: "db-1", Endpoint: "db-1.example", Port: 5432, Role: domain.RoleWriter}})
+
+	if err == nil {
+		t.Fatalf("expected monitor error")
+	}
+	if !strings.Contains(err.Error(), "monitor configuration failed") {
+		t.Fatalf("error should be monitor-level configuration failure: %v", err)
+	}
+	if strings.Contains(err.Error(), "pw") {
+		t.Fatalf("error leaked password: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func newMockDB(t *testing.T) (*sql.DB, sqlmock.Sqlmock) {
 	t.Helper()
 	db, mock, err := sqlmock.New()
