@@ -772,6 +772,9 @@ func normalizePodTemplateForDrift(template *corev1.PodTemplateSpec) {
 	if template.Spec.SchedulerName == corev1.DefaultSchedulerName {
 		template.Spec.SchedulerName = ""
 	}
+	if template.Spec.DeprecatedServiceAccount != "" && template.Spec.DeprecatedServiceAccount == template.Spec.ServiceAccountName {
+		template.Spec.DeprecatedServiceAccount = ""
+	}
 	if template.Spec.TerminationGracePeriodSeconds != nil && *template.Spec.TerminationGracePeriodSeconds == 30 {
 		template.Spec.TerminationGracePeriodSeconds = nil
 	}

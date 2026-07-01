@@ -1259,6 +1259,62 @@ func TestReconcileKeepsCachedHealthWhenMonitorFails(t *testing.T) {
 	}
 }
 
+func TestReconcilePreservesWriterAndReaderMembershipWhenMonitorFails(t *testing.T) {
+	ctx := context.Background()
+	scheme := testScheme(t)
+	resource := sampleResource()
+	resource.Status.LastAppliedMembership.Writer = []string{"db-1"}
+	resource.Status.LastAppliedMembership.Reader = []string{"db-2"}
+	resource.Status.Instances = []v1alpha1.InstanceStatus{
+		{
+			InstanceName:         "db-1",
+			Endpoint:             "db-1.example",
+			Port:                 5432,
+			Role:                 v1alpha1.RoleWriter,
+			Healthy:              true,
+			ConsecutiveSuccesses: 3,
+			Reason:               "healthy",
+		},
+		{
+			InstanceName:         "db-2",
+			Endpoint:             "db-2.example",
+			Port:                 5432,
+			Role:                 v1alpha1.RoleReader,
+			Healthy:              true,
+			ConsecutiveSuccesses: 3,
+			Reason:               "healthy",
+		},
+	}
+	client := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(&v1alpha1.PgBouncerAurora{}).WithObjects(resource).Build()
+	reconciler := &PgBouncerAuroraReconciler{
+		Client: client,
+		Scheme: scheme,
+		Discovery: fakeDiscovery{result: domain.DiscoveryResult{Trusted: true, Instances: []domain.InstanceObservation{
+			{Name: "db-1", Endpoint: "db-1.example", Port: 5432, Role: domain.RoleWriter},
+			{Name: "db-2", Endpoint: "db-2.example", Port: 5432, Role: domain.RoleReader},
+		}}},
+		Monitor: fakeMonitor{err: errors.New("db-1: monitor configuration failed: password authentication failed for user svc")},
+	}
+
+	_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: resource.Name, Namespace: resource.Namespace}})
+	if err != nil {
+		t.Fatalf("reconcile should not fail on monitor error: %v", err)
+	}
+	updated := &v1alpha1.PgBouncerAurora{}
+	if err := client.Get(ctx, types.NamespacedName{Name: resource.Name, Namespace: resource.Namespace}, updated); err != nil {
+		t.Fatalf("get status failed: %v", err)
+	}
+	if len(updated.Status.LastAppliedMembership.Writer) != 1 || updated.Status.LastAppliedMembership.Writer[0] != "db-1" {
+		t.Fatalf("writer membership should be preserved: %#v", updated.Status.LastAppliedMembership.Writer)
+	}
+	if len(updated.Status.LastAppliedMembership.Reader) != 1 || updated.Status.LastAppliedMembership.Reader[0] != "db-2" {
+		t.Fatalf("reader membership should be preserved: %#v", updated.Status.LastAppliedMembership.Reader)
+	}
+	if !hasCondition(updated.Status.Conditions, "MonitorSucceeded", metav1.ConditionFalse) {
+		t.Fatalf("MonitorSucceeded false condition missing: %#v", updated.Status.Conditions)
+	}
+}
+
 func TestReconcilePatchesLivePodMembership(t *testing.T) {
 	ctx := context.Background()
 	scheme := testScheme(t)
@@ -1525,6 +1581,23 @@ func TestDeploymentDbiMetadataDriftedRequiresNonEmptyIdentity(t *testing.T) {
 	expected.Labels[render.LabelDbiResourceID] = ""
 	if deploymentDbiMetadataDrifted(existing, expected) {
 		t.Fatalf("unknown desired DBI should not be treated as replacement")
+	}
+}
+
+func TestPodTemplateDriftIgnoresDeprecatedServiceAccountDefaulting(t *testing.T) {
+	resource := sampleResource()
+	resource.Spec.PgBouncer.ServiceAccountName = "pgbouncer-options"
+	expected := render.InstanceDeployment(render.InstanceRenderInput{
+		Owner: resource,
+		Instance: domain.InstancePlan{InstanceObservation: domain.InstanceObservation{
+			Name: "db-1",
+		}},
+	})
+	existing := expected.DeepCopy()
+	existing.Spec.Template.Spec.DeprecatedServiceAccount = "pgbouncer-options"
+
+	if !podTemplateSemanticallyEqual(existing.Spec.Template, expected.Spec.Template) {
+		t.Fatalf("deprecated serviceAccount defaulting should not drift")
 	}
 }
 
