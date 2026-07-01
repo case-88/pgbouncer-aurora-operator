@@ -44,7 +44,6 @@ func TestPgBouncerAuroraDeepCopySeparatesMutableFields(t *testing.T) {
 				Writer: ServiceRoleSpec{Annotations: map[string]string{"k": "v"}},
 				Reader: ReaderServiceSpec{},
 			},
-			Monitor: MonitorSpec{DirectDBProbe: boolPtr(true), PgBouncerPathProbe: boolPtr(true)},
 			TopologyPolicy: TopologyPolicySpec{
 				ZoneAware: ZoneAwareSpec{Enabled: boolPtr(true)},
 			},
@@ -72,8 +71,6 @@ func TestPgBouncerAuroraDeepCopySeparatesMutableFields(t *testing.T) {
 	copied.Spec.PgBouncer.VolumeMounts[0].MountPath = "/other"
 	copied.Spec.PgBouncer.InstanceOverrides[0].Config.PgBouncer["default_pool_size"] = "200"
 	copied.Spec.PgBouncer.InstanceOverrides[0].Config.Databases["*"]["pool_size"] = "200"
-	*copied.Spec.Monitor.DirectDBProbe = false
-	*copied.Spec.Monitor.PgBouncerPathProbe = false
 	*copied.Spec.TopologyPolicy.ZoneAware.Enabled = false
 	copied.Spec.Services.Writer.Annotations["k"] = "changed"
 	copied.Status.LastAppliedMembership.Writer[0] = "db-2"
@@ -109,7 +106,7 @@ func TestPgBouncerAuroraDeepCopySeparatesMutableFields(t *testing.T) {
 	if resource.Spec.Services.Writer.Annotations["k"] != "v" {
 		t.Fatalf("annotation alias detected")
 	}
-	if !*resource.Spec.Monitor.DirectDBProbe || !*resource.Spec.Monitor.PgBouncerPathProbe || !*resource.Spec.TopologyPolicy.ZoneAware.Enabled {
+	if !*resource.Spec.TopologyPolicy.ZoneAware.Enabled {
 		t.Fatalf("enabled pointer alias detected")
 	}
 	if resource.Status.LastAppliedMembership.Writer[0] != "db-1" || !resource.Status.Instances[0].Healthy || resource.Status.Conditions[0].Status != metav1.ConditionTrue {

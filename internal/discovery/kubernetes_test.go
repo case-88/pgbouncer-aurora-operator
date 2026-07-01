@@ -47,7 +47,6 @@ func TestKubernetesRowSourceReadsSecretAndBuildsConnInfo(t *testing.T) {
 	secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "db-auth", Namespace: "default"}, Data: map[string][]byte{
 		"username": []byte("svc"),
 		"password": []byte("pw"),
-		"sslmode":  []byte("disable"),
 	}}
 	client := fake.NewClientBuilder().WithScheme(scheme).WithObjects(secret).Build()
 	factory := &fakeDBFactory{}
@@ -57,6 +56,7 @@ func TestKubernetesRowSourceReadsSecretAndBuildsConnInfo(t *testing.T) {
 	resource.Spec.Discovery.Port = 5432
 	resource.Spec.Discovery.AuthSecretRef.Name = "db-auth"
 	resource.Spec.Discovery.Database = "postgres"
+	resource.Spec.Discovery.SSLMode = "verify-full"
 
 	_, err := (KubernetesRowSource{Client: client, DBFactory: factory}).Rows(context.Background(), resource)
 	if err == nil || !strings.Contains(err.Error(), "stop after credential read") {
@@ -65,7 +65,7 @@ func TestKubernetesRowSourceReadsSecretAndBuildsConnInfo(t *testing.T) {
 	if len(factory.infos) == 0 {
 		t.Fatalf("expected open call")
 	}
-	if factory.infos[0].Host != "sample.cluster-example" || factory.infos[0].Username != "svc" || factory.infos[0].Password != "pw" || factory.infos[0].SSLMode != "disable" {
+	if factory.infos[0].Host != "sample.cluster-example" || factory.infos[0].Username != "svc" || factory.infos[0].Password != "pw" || factory.infos[0].SSLMode != "verify-full" {
 		t.Fatalf("conn info = %#v", factory.infos[0])
 	}
 }

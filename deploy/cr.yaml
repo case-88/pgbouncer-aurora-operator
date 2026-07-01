@@ -20,12 +20,14 @@ spec:
     # Port used for generated cluster and instance endpoints.
     port: 5432
 
-    # Database used by discovery and monitor probe connections.
+    # Database used by discovery and direct monitor probe connections.
     database: postgres
 
-    # DB credentials used for Aurora discovery, direct DB monitor probes, and
-    # PgBouncer path probes. The same user must also exist in userlist.txt when
-    # monitor.pgbouncerPathProbe is enabled.
+    # PostgreSQL SSL mode used by discovery and direct monitor probe
+    # connections. The referenced Secret contains only username/password.
+    sslMode: require
+
+    # DB credentials used for Aurora discovery and direct DB monitor probes.
     authSecretRef:
       name: pgbouncer-operator-db-auth
 
@@ -61,21 +63,6 @@ spec:
     # healthy again.
     recoveryThreshold: 2
 
-    # Maximum number of backend probes running concurrently per CR.
-    maxConcurrency: 4
-
-    # Direct probe connects to each Aurora instance and checks health/role.
-    directDBProbe: true
-
-    # PgBouncer path probe verifies the in-cluster path through the per-instance
-    # PgBouncer Service. It uses sslmode=disable and the reserved database alias
-    # pgbouncer_aurora_probe when enabled.
-    pgbouncerPathProbe: true
-
-    # SSL mode used only by the direct Aurora instance probe. If unset, the
-    # discovery Secret's sslmode value is used.
-    directDBSSLMode: require
-
   pgbouncer:
     # PgBouncer image is intentionally user supplied. This project publishes
     # the operator image only, not a bundled PgBouncer image.
@@ -102,6 +89,9 @@ spec:
         server_idle_timeout: "3600"
         server_lifetime: "3600"
         dns_max_ttl: "15"
+        # Some drivers, including lib/pq, send extra_float_digits during startup.
+        # PgBouncer should ignore it instead of rejecting the client connection.
+        ignore_startup_parameters: extra_float_digits
       databases:
         # The operator always renders host/port for each discovered Aurora
         # instance. User-provided host/port values are ignored.
@@ -122,8 +112,7 @@ spec:
             "*":
               pool_size: "100"
 
-    # Secret containing userlist.txt. The discovery user must also be present
-    # here when monitor.pgbouncerPathProbe is enabled.
+    # Secret containing userlist.txt.
     authFileSecretRef:
       name: pgbouncer-userlist
 
@@ -160,8 +149,8 @@ spec:
     topologySpreadConstraints: []
 
   # Writer and Reader role Services are always managed. Per-instance Services
-  # are always created for discovered instances because monitor path probes and
-  # direct per-instance targeting depend on them.
+  # are always created for discovered instances for debugging and direct
+  # per-instance targeting.
   services:
     writer:
       # Final Service name is <cr-name>-<name>.
@@ -184,11 +173,14 @@ spec:
     # Retain removed per-instance resources for this duration before cleanup.
     removedInstanceRetention: 1h
 
-    # Writer membership change handling:
-    # - KeepExisting: do not restart PgBouncer Deployments.
-    # - RestartWriters: restart Writer members on Writer changes.
+    # Writer membership change handling. RestartWriters is recommended for
+    # production failover handling because driver role checks apply when opening
+    # new connections and do not continuously monitor already-open connections.
+    # - KeepExisting: switch Service membership only; wrong-role connections can
+    #   stay alive longer after failover.
+    # - RestartWriters: restart PgBouncer Deployments connected to old/new Writer members.
     # - RestartAll: restart all managed PgBouncer Deployments on Writer changes.
-    writerChangeConnectionHandling: KeepExisting
+    writerChangeConnectionHandling: RestartWriters
 
     # If no healthy Reader is available, temporarily route Reader Service
     # traffic to the Writer. If disabled, the Reader Service remains but has no

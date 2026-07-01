@@ -1458,6 +1458,61 @@ func TestReconcileTracksMissingInstanceAndRetainsResources(t *testing.T) {
 	}
 }
 
+func TestReconcileFastRemovesRDSDeletingInstanceFromMembership(t *testing.T) {
+	ctx := context.Background()
+	scheme := testScheme(t)
+	resource := sampleResource()
+	resource.Spec.TopologyPolicy.RemoveAfterMissingCount = 3
+	resource.Status.LastKnownTopology.Instances = []v1alpha1.InstanceTopologyStatus{{InstanceName: "db-old"}}
+	resource.Status.LastAppliedMembership.Reader = []string{"db-old"}
+	oldPod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "old-pod", Namespace: resource.Namespace, Labels: map[string]string{
+		render.LabelManagedBy: render.ManagedByValue,
+		render.LabelCluster:   render.ClusterLabelValue(resource.Name),
+		render.LabelInstance:  "db-old",
+		render.LabelReader:    "true",
+	}}}
+	oldObjects := staleInstanceObjects(resource, "db-old")
+	client := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&v1alpha1.PgBouncerAurora{}).
+		WithObjects(append([]client.Object{resource, oldPod}, oldObjects...)...).
+		Build()
+	reconciler := &PgBouncerAuroraReconciler{
+		Client: client,
+		Scheme: scheme,
+		Discovery: fakeDiscovery{result: domain.DiscoveryResult{
+			Trusted:           true,
+			RemovingInstances: []string{"db-old"},
+			Instances: []domain.InstanceObservation{{
+				Name: "db-1", Endpoint: "db-1.example", Port: 5432, Role: domain.RoleWriter,
+			}},
+		}},
+		Monitor: fakeMonitor{health: map[string]domain.HealthStatus{"db-1": {Healthy: true}}},
+	}
+
+	_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: resource.Name, Namespace: resource.Namespace}})
+	if err != nil {
+		t.Fatalf("reconcile failed: %v", err)
+	}
+
+	updated := &v1alpha1.PgBouncerAurora{}
+	if err := client.Get(ctx, types.NamespacedName{Name: resource.Name, Namespace: resource.Namespace}, updated); err != nil {
+		t.Fatalf("get status failed: %v", err)
+	}
+	if len(updated.Status.MissingInstances) != 1 ||
+		updated.Status.MissingInstances[0].InstanceName != "db-old" ||
+		updated.Status.MissingInstances[0].MissingCount != 3 {
+		t.Fatalf("fast removed missing instance status mismatch: %#v", updated.Status.MissingInstances)
+	}
+	updatedPod := &corev1.Pod{}
+	if err := client.Get(ctx, types.NamespacedName{Name: "old-pod", Namespace: resource.Namespace}, updatedPod); err != nil {
+		t.Fatal(err)
+	}
+	if updatedPod.Labels[render.LabelReader] == "true" {
+		t.Fatalf("deleting reader label should be removed immediately: %#v", updatedPod.Labels)
+	}
+}
+
 func TestReconcileDeletesRemovedInstanceAfterRetention(t *testing.T) {
 	ctx := context.Background()
 	scheme := testScheme(t)
@@ -1809,11 +1864,10 @@ func TestReconcileRemovesObservedUnhealthyWriterMembershipAfterFailureThreshold(
 	}
 }
 
-func TestReconcileRestartsWritersOnWriterChange(t *testing.T) {
+func TestReconcileDefaultsToRestartWritersOnWriterChange(t *testing.T) {
 	ctx := context.Background()
 	scheme := testScheme(t)
 	resource := sampleResource()
-	resource.Spec.TopologyPolicy.WriterChangeConnectionHandling = v1alpha1.WriterChangeRestartWriters
 	resource.Status.LastAppliedMembership.Writer = []string{"db-old"}
 	client := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(&v1alpha1.PgBouncerAurora{}).WithObjects(resource).Build()
 	reconciler := &PgBouncerAuroraReconciler{
@@ -1859,6 +1913,41 @@ func TestReconcileRestartsWritersOnWriterChange(t *testing.T) {
 	newDeployment = assertExists[*appsv1.Deployment](t, ctx, client, "sample-db-new")
 	if newDeployment.Spec.Template.Annotations[restartedAtAnnotation] != restartToken {
 		t.Fatalf("new writer restart annotation should be preserved: %#v", newDeployment.Spec.Template.Annotations)
+	}
+}
+
+func TestReconcileKeepsExistingWhenExplicitlyConfigured(t *testing.T) {
+	ctx := context.Background()
+	scheme := testScheme(t)
+	resource := sampleResource()
+	resource.Spec.TopologyPolicy.WriterChangeConnectionHandling = v1alpha1.WriterChangeKeepExisting
+	resource.Status.LastAppliedMembership.Writer = []string{"db-old"}
+	client := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(&v1alpha1.PgBouncerAurora{}).WithObjects(resource).Build()
+	reconciler := &PgBouncerAuroraReconciler{
+		Client: client,
+		Scheme: scheme,
+		Discovery: fakeDiscovery{result: domain.DiscoveryResult{Trusted: true, Instances: []domain.InstanceObservation{
+			{Name: "db-new", Endpoint: "db-new.example", Port: 5432, Role: domain.RoleWriter},
+			{Name: "db-old", Endpoint: "db-old.example", Port: 5432, Role: domain.RoleReader},
+		}}},
+		Monitor: fakeMonitor{health: map[string]domain.HealthStatus{
+			"db-new": {Healthy: true},
+			"db-old": {Healthy: true},
+		}},
+	}
+
+	_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: resource.Name, Namespace: resource.Namespace}})
+	if err != nil {
+		t.Fatalf("reconcile failed: %v", err)
+	}
+
+	oldDeployment := assertExists[*appsv1.Deployment](t, ctx, client, "sample-db-old")
+	if got := oldDeployment.Spec.Template.Annotations[restartedAtAnnotation]; got != "" {
+		t.Fatalf("old writer deployment should not be restarted: %q", got)
+	}
+	newDeployment := assertExists[*appsv1.Deployment](t, ctx, client, "sample-db-new")
+	if got := newDeployment.Spec.Template.Annotations[restartedAtAnnotation]; got != "" {
+		t.Fatalf("new writer deployment should not be restarted: %q", got)
 	}
 }
 

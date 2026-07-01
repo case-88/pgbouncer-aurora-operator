@@ -29,6 +29,7 @@ func TestCRDRequiresRuntimeCriticalFields(t *testing.T) {
 	assertMinLength(t, objectAt(t, discovery, "properties", "clusterEndpoints", "properties", "reader", "properties", "host"), 1)
 	assertRequired(t, objectAt(t, discovery, "properties", "authSecretRef"), "name")
 	assertMinLength(t, objectAt(t, discovery, "properties", "authSecretRef", "properties", "name"), 1)
+	assertDefault(t, objectAt(t, discovery, "properties", "sslMode"), "require")
 
 	pgbouncer := objectAt(t, specSchema, "properties", "pgbouncer")
 	assertRequired(t, pgbouncer, "image", "authFileSecretRef")
@@ -43,6 +44,7 @@ func TestCRDRequiresRuntimeCriticalFields(t *testing.T) {
 
 	zoneAware := objectAt(t, specSchema, "properties", "topologyPolicy", "properties", "zoneAware")
 	assertDefault(t, objectAt(t, zoneAware, "properties", "conflictPolicy"), "Warn")
+	assertDefault(t, objectAt(t, specSchema, "properties", "topologyPolicy", "properties", "writerChangeConnectionHandling"), "RestartWriters")
 }
 
 func readCRDManifest(t *testing.T) []byte {

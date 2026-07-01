@@ -17,25 +17,26 @@ import (
 )
 
 const (
-	LabelManagedBy         = "pgbouncer-aurora.io/managed-by"
-	LabelCluster           = "pgbouncer-aurora.io/cluster"
-	LabelInstance          = "pgbouncer-aurora.io/instance"
-	LabelRole              = "pgbouncer-aurora.io/role"
-	LabelServiceRole       = "pgbouncer-aurora.io/service-role"
-	LabelWriter            = "pgbouncer-aurora.io/member-writer"
-	LabelReader            = "pgbouncer-aurora.io/member-reader"
-	LabelAppName           = "app.kubernetes.io/name"
-	LabelAppComponent      = "app.kubernetes.io/component"
-	LabelAppInstance       = "app.kubernetes.io/instance"
-	LabelAppManagedBy      = "app.kubernetes.io/managed-by"
-	LabelAppPartOf         = "app.kubernetes.io/part-of"
-	AnnotationClusterName  = "pgbouncer-aurora.io/cluster-name"
-	AnnotationConfigHash   = "pgbouncer-aurora.io/config-hash"
-	AnnotationAuthFileHash = "pgbouncer-aurora.io/auth-file-hash"
-	ManagedByValue         = "pgbouncer-aurora-operator"
-	AppNameValue           = "pgbouncer-aurora"
-	AppComponentValue      = "pgbouncer"
-	AppPartOfValue         = "pgbouncer-aurora"
+	LabelManagedBy          = "pgbouncer-aurora.io/managed-by"
+	LabelCluster            = "pgbouncer-aurora.io/cluster"
+	LabelInstance           = "pgbouncer-aurora.io/instance"
+	LabelRole               = "pgbouncer-aurora.io/role"
+	LabelServiceRole        = "pgbouncer-aurora.io/service-role"
+	LabelWriter             = "pgbouncer-aurora.io/member-writer"
+	LabelReader             = "pgbouncer-aurora.io/member-reader"
+	LabelAppName            = "app.kubernetes.io/name"
+	LabelAppComponent       = "app.kubernetes.io/component"
+	LabelAppInstance        = "app.kubernetes.io/instance"
+	LabelAppManagedBy       = "app.kubernetes.io/managed-by"
+	LabelAppPartOf          = "app.kubernetes.io/part-of"
+	AnnotationClusterName   = "pgbouncer-aurora.io/cluster-name"
+	AnnotationConfigHash    = "pgbouncer-aurora.io/config-hash"
+	AnnotationAuthFileHash  = "pgbouncer-aurora.io/auth-file-hash"
+	AnnotationDbiResourceID = "pgbouncer-aurora.io/dbi-resource-id"
+	ManagedByValue          = "pgbouncer-aurora-operator"
+	AppNameValue            = "pgbouncer-aurora"
+	AppComponentValue       = "pgbouncer"
+	AppPartOfValue          = "pgbouncer-aurora"
 
 	maxDNSLabelLength = 63
 	nameHashLength    = 10
@@ -335,6 +336,9 @@ func deploymentAnnotations(owner *v1alpha1.PgBouncerAurora, instance domain.Inst
 		authFileHash = hashString(owner.Spec.PgBouncer.AuthFileSecretRef.Name)
 	}
 	annotations[AnnotationAuthFileHash] = authFileHash
+	if strings.TrimSpace(instance.DbiResourceId) != "" {
+		annotations[AnnotationDbiResourceID] = strings.TrimSpace(instance.DbiResourceId)
+	}
 	return annotations
 }
 

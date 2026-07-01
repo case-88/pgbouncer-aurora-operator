@@ -16,7 +16,6 @@ import (
 type Credentials struct {
 	Username string
 	Password string
-	SSLMode  string
 }
 
 type ConnInfo struct {
@@ -52,17 +51,13 @@ func CredentialsFromSecret(secret *corev1.Secret) (Credentials, error) {
 	}
 	username := firstSecretValue(secret, "username", "user")
 	password := firstSecretValue(secret, "password")
-	sslMode := firstSecretValue(secret, "sslmode", "ssl_mode")
-	if sslMode == "" {
-		sslMode = "require"
-	}
 	if username == "" {
 		return Credentials{}, fmt.Errorf("secret %s/%s missing username", secret.Namespace, secret.Name)
 	}
 	if password == "" {
 		return Credentials{}, fmt.Errorf("secret %s/%s missing password", secret.Namespace, secret.Name)
 	}
-	return Credentials{Username: username, Password: password, SSLMode: sslMode}, nil
+	return Credentials{Username: username, Password: password}, nil
 }
 
 func ConnString(info ConnInfo) string {

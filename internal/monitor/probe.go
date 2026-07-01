@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -23,6 +24,8 @@ type ProbeMonitor struct {
 	JobTimeout   time.Duration
 	ProbeLimiter WaitLimiter
 }
+
+const defaultMonitorProbeConcurrency = 4
 
 type WaitLimiter interface {
 	Wait(ctx context.Context) error
@@ -56,7 +59,7 @@ func (m ProbeMonitor) Check(ctx context.Context, resource *v1alpha1.PgBouncerAur
 	if err != nil {
 		return nil, err
 	}
-	limit := monitorConcurrency(resource, len(readyInstances))
+	limit := monitorConcurrency(len(readyInstances))
 	results := make(chan probeResult, len(readyInstances))
 	sem := make(chan struct{}, limit)
 	var wg sync.WaitGroup
@@ -133,7 +136,7 @@ func (m ProbeMonitor) jobTimeout(resource *v1alpha1.PgBouncerAurora, instanceCou
 		return m.JobTimeout
 	}
 	timeout := monitorProbeTimeout(resource)
-	concurrency := monitorConcurrency(resource, instanceCount)
+	concurrency := monitorConcurrency(instanceCount)
 	batches := 1
 	if instanceCount > 0 && concurrency > 0 {
 		batches = (instanceCount + concurrency - 1) / concurrency
@@ -147,14 +150,8 @@ type probeResult struct {
 	err    error
 }
 
-func monitorConcurrency(resource *v1alpha1.PgBouncerAurora, readyCount int) int {
-	limit := 0
-	if resource != nil {
-		limit = int(resource.Spec.Monitor.MaxConcurrency)
-	}
-	if limit <= 0 {
-		limit = 4
-	}
+func monitorConcurrency(readyCount int) int {
+	limit := defaultMonitorProbeConcurrency
 	if readyCount > 0 && limit > readyCount {
 		return readyCount
 	}
@@ -228,29 +225,17 @@ func (m ProbeMonitor) checkInstance(ctx context.Context, resource *v1alpha1.PgBo
 	probeCtx, cancel = context.WithTimeout(ctx, monitorProbeTimeout(resource))
 	defer cancel()
 
-	directDBProbe, pgBouncerPathProbe := enabledProbes(resource.Spec.Monitor.DirectDBProbe, resource.Spec.Monitor.PgBouncerPathProbe)
-	if !directDBProbe && !pgBouncerPathProbe {
-		return domain.HealthStatus{Healthy: false, Reason: "no monitor probes enabled"}
-	}
-	if directDBProbe {
-		if err := directProbe(probeCtx, resource, factory, creds, instance); err != nil {
-			return domain.HealthStatus{Healthy: false, Reason: "direct db probe failed: " + err.Error()}
-		}
-	}
-	if pgBouncerPathProbe {
-		if err := pathProbe(probeCtx, resource, factory, creds, instance); err != nil {
-			return domain.HealthStatus{Healthy: false, Reason: "pgbouncer path probe failed: " + err.Error()}
-		}
+	if err := directProbe(probeCtx, resource, factory, creds, instance); err != nil {
+		return domain.HealthStatus{Healthy: false, Reason: "direct db probe failed: " + redactCredentialValue(err.Error(), creds.Password)}
 	}
 	return domain.HealthStatus{Healthy: true, Reason: "healthy"}
 }
 
-func enabledProbes(directDBProbe *bool, pgBouncerPathProbe *bool) (bool, bool) {
-	return boolDefaultTrue(directDBProbe), boolDefaultTrue(pgBouncerPathProbe)
-}
-
-func boolDefaultTrue(value *bool) bool {
-	return value == nil || *value
+func redactCredentialValue(message, secret string) string {
+	if secret == "" {
+		return message
+	}
+	return strings.ReplaceAll(message, secret, "[redacted]")
 }
 
 func directProbe(ctx context.Context, resource *v1alpha1.PgBouncerAurora, factory postgres.DBFactory, creds postgres.Credentials, instance domain.InstanceObservation) error {
@@ -260,7 +245,7 @@ func directProbe(ctx context.Context, resource *v1alpha1.PgBouncerAurora, factor
 		Database: defaultString(resource.Spec.Discovery.Database, "postgres"),
 		Username: creds.Username,
 		Password: creds.Password,
-		SSLMode:  defaultString(resource.Spec.Monitor.DirectDBSSLMode, creds.SSLMode),
+		SSLMode:  resource.Spec.Discovery.SSLMode,
 	})
 	if err != nil {
 		return err
@@ -274,27 +259,6 @@ func directProbe(ctx context.Context, resource *v1alpha1.PgBouncerAurora, factor
 		return fmt.Errorf("role mismatch: discovery=%s monitor=%s", instance.Role, role)
 	}
 	return nil
-}
-
-func pathProbe(ctx context.Context, resource *v1alpha1.PgBouncerAurora, factory postgres.DBFactory, creds postgres.Credentials, instance domain.InstanceObservation) error {
-	db, err := factory.Open(ctx, postgres.ConnInfo{
-		Host:     perInstanceServiceHost(resource, instance),
-		Port:     render.ListenPort(resource.Spec),
-		Database: render.PgBouncerProbeDatabaseAlias,
-		Username: creds.Username,
-		Password: creds.Password,
-		SSLMode:  "disable",
-	})
-	if err != nil {
-		return err
-	}
-	defer db.Close()
-	return ping(ctx, db)
-}
-
-func ping(ctx context.Context, db *sql.DB) error {
-	var one int
-	return db.QueryRowContext(ctx, "select 1").Scan(&one)
 }
 
 func roleProbe(ctx context.Context, db *sql.DB) (domain.Role, error) {
@@ -313,10 +277,6 @@ func roleProbe(ctx context.Context, db *sql.DB) (domain.Role, error) {
 		return "", fmt.Errorf("role sanity mismatch: pg_is_in_recovery=false transaction_read_only=true")
 	}
 	return domain.RoleWriter, nil
-}
-
-func perInstanceServiceHost(resource *v1alpha1.PgBouncerAurora, instance domain.InstanceObservation) string {
-	return fmt.Sprintf("%s.%s.svc", render.InstanceResourceName(resource.Name, instance.Name), resource.Namespace)
 }
 
 func defaultPort(values ...int32) int32 {

@@ -74,7 +74,7 @@ func (s KubernetesRowSource) rowsFromEndpoint(
 		Database: defaultString(resource.Spec.Discovery.Database, "postgres"),
 		Username: creds.Username,
 		Password: creds.Password,
-		SSLMode:  creds.SSLMode,
+		SSLMode:  resource.Spec.Discovery.SSLMode,
 	})
 	if err != nil {
 		return nil, err

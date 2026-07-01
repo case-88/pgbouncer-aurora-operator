@@ -76,7 +76,7 @@ func TestPgBouncerINIDatabaseSectionProtectsManagedKeys(t *testing.T) {
 	}
 }
 
-func TestPgBouncerINIInjectsReservedProbeDatabase(t *testing.T) {
+func TestPgBouncerINIRendersCustomDatabaseNameAsUserConfig(t *testing.T) {
 	spec := v1alpha1.PgBouncerAuroraSpec{}
 	spec.Discovery.Port = 5432
 	spec.Discovery.Database = "appdb"
@@ -85,49 +85,16 @@ func TestPgBouncerINIInjectsReservedProbeDatabase(t *testing.T) {
 			"dbname": "appdb",
 			"user":   "svc",
 		},
-		PgBouncerProbeDatabaseAlias: {
+		"analytics": {
 			"dbname": "evil",
 			"user":   "svc",
 		},
 	}
 
 	ini := PgBouncerINI(spec, domain.InstanceObservation{Name: "db-1", Endpoint: "db-1.example"})
-	expected := PgBouncerProbeDatabaseAlias + " = host=db-1.example port=5432 dbname=appdb"
+	expected := "analytics = host=db-1.example port=5432 dbname=evil user=svc"
 	if !strings.Contains(ini, expected) {
 		t.Fatalf("missing %q in:\n%s", expected, ini)
-	}
-	for _, unexpected := range []string{
-		PgBouncerProbeDatabaseAlias + " = host=db-1.example port=5432 dbname=evil",
-		PgBouncerProbeDatabaseAlias + " = host=db-1.example port=5432 dbname=appdb user=svc",
-	} {
-		if strings.Contains(ini, unexpected) {
-			t.Fatalf("unexpected %q in:\n%s", unexpected, ini)
-		}
-	}
-}
-
-func TestPgBouncerINIProbeDatabaseDefaultsToPostgres(t *testing.T) {
-	spec := v1alpha1.PgBouncerAuroraSpec{}
-	spec.Discovery.Port = 5432
-
-	ini := PgBouncerINI(spec, domain.InstanceObservation{Name: "db-1", Endpoint: "db-1.example"})
-	expected := PgBouncerProbeDatabaseAlias + " = host=db-1.example port=5432 dbname=postgres"
-	if !strings.Contains(ini, expected) {
-		t.Fatalf("missing %q in:\n%s", expected, ini)
-	}
-}
-
-func TestPgBouncerINISkipsProbeDatabaseWhenPathProbeDisabled(t *testing.T) {
-	disabled := false
-	spec := v1alpha1.PgBouncerAuroraSpec{}
-	spec.Monitor.PgBouncerPathProbe = &disabled
-	spec.PgBouncer.Config.Databases = map[string]map[string]string{
-		"*": {"user": "svc"},
-	}
-
-	ini := PgBouncerINI(spec, domain.InstanceObservation{Name: "db-1", Endpoint: "db-1.example", Port: 5432})
-	if strings.Contains(ini, PgBouncerProbeDatabaseAlias) {
-		t.Fatalf("unexpected probe alias in:\n%s", ini)
 	}
 }
 

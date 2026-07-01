@@ -12,28 +12,28 @@ func TestCredentialsFromSecret(t *testing.T) {
 	secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "db", Namespace: "default"}, Data: map[string][]byte{
 		"username": []byte("svc"),
 		"password": []byte("pw"),
+	}}
+	creds, err := CredentialsFromSecret(secret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if creds.Username != "svc" || creds.Password != "pw" {
+		t.Fatalf("creds = %#v", creds)
+	}
+}
+
+func TestCredentialsFromSecretIgnoresSSLModeKeys(t *testing.T) {
+	secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "db", Namespace: "default"}, Data: map[string][]byte{
+		"user":     []byte("svc"),
+		"password": []byte("pw"),
 		"sslmode":  []byte("disable"),
 	}}
 	creds, err := CredentialsFromSecret(secret)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if creds.Username != "svc" || creds.Password != "pw" || creds.SSLMode != "disable" {
+	if creds.Username != "svc" || creds.Password != "pw" {
 		t.Fatalf("creds = %#v", creds)
-	}
-}
-
-func TestCredentialsFromSecretDefaultsSSLMode(t *testing.T) {
-	secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "db", Namespace: "default"}, Data: map[string][]byte{
-		"user":     []byte("svc"),
-		"password": []byte("pw"),
-	}}
-	creds, err := CredentialsFromSecret(secret)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if creds.SSLMode != "require" {
-		t.Fatalf("sslmode = %s", creds.SSLMode)
 	}
 }
 
