@@ -1,0 +1,73 @@
+replicaCount: 1
+
+image:
+  repository: quay.io/case-88/pgbouncer-aurora-operator
+  tag: v0.1.0
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+
+rbac:
+  create: true
+
+watch:
+  names: "*"
+
+aws:
+  region: ap-northeast-2
+  apiQPS: 1
+  apiBurst: 1
+
+controller:
+  leaderElect: true
+  maxConcurrentReconciles: 64
+  reconcileMinInterval: 1s
+  rdsMetadataRefreshInterval: 1m
+  workersPerCR: 10
+  k8sApiTimeout: 10s
+
+status:
+  refreshMinInterval: 5s
+  recentWindow: 1m
+
+metrics:
+  service:
+    enabled: true
+    port: 8080
+
+networkPolicy:
+  enabled: true
+
+extraArgs: []
+extraEnv: []
+extraVolumeMounts: []
+extraVolumes: []
+
+podAnnotations: {}
+podLabels: {}
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
+
+resources: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}

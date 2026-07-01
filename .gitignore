@@ -1,2 +1,4 @@
-charts/
 example/
+charts/**/*.tgz
+charts/**/charts/
+charts/**/Chart.lock

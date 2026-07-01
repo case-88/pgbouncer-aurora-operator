@@ -1,0 +1,16 @@
+apiVersion: v2
+name: pgbouncer-aurora-operator
+description: Namespace-scoped operator for PgBouncer in front of Aurora PostgreSQL
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+home: https://github.com/case-88/pgbouncer-aurora-operator
+sources:
+  - https://github.com/case-88/pgbouncer-aurora-operator
+keywords:
+  - aurora
+  - postgresql
+  - pgbouncer
+  - operator
+maintainers:
+  - name: case-88

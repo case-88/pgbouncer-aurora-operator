@@ -1,0 +1,16 @@
+{{- if .Values.metrics.service.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "pgbouncer-aurora-operator.fullname" . }}
+  labels:
+    {{- include "pgbouncer-aurora-operator.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "pgbouncer-aurora-operator.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ .Values.metrics.service.port }}
+      targetPort: metrics
+{{- end }}
