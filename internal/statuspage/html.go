@@ -722,7 +722,7 @@ const statusHTML = `<!doctype html>
       var select = document.getElementById("recentWindowSelect");
       var current = effectiveRecentWindowSeconds();
       select.innerHTML = values.map(function(value) {
-        return '<option value="' + value + '">Highlights ' + formatDuration(value) + '~</option>';
+        return '<option value="' + value + '">Highlight ' + formatDuration(value) + '</option>';
       }).join("");
       if (values.indexOf(current) < 0) current = 60;
       recentWindowSeconds = current;
