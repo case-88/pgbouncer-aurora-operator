@@ -34,12 +34,7 @@ spec:
     # Minimum interval for aurora_replica_status() topology checks.
     interval: 3s
 
-    # RDS metadata refresh interval for zone-aware AZ and DbiResourceId data.
-    # This is intentionally separate from the topology discovery interval.
-    metadataRefreshInterval: 1m
-
-    # Timeout for discovery DB queries. RDS metadata refresh uses the same
-    # timeout budget.
+    # Timeout for discovery DB queries.
     timeout: 3s
 
     # Consecutive untrusted discovery results allowed before freezing instead

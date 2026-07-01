@@ -21,21 +21,14 @@ import (
 type ProbeMonitor struct {
 	Client       client.Client
 	DBFactory    postgres.DBFactory
-	JobTimeout   time.Duration
-	ProbeLimiter WaitLimiter
+	WorkersPerCR int
 }
 
-const defaultMonitorProbeConcurrency = 4
-
-type WaitLimiter interface {
-	Wait(ctx context.Context) error
-}
+const defaultWorkersPerCR = 4
 
 func (m ProbeMonitor) Check(ctx context.Context, resource *v1alpha1.PgBouncerAurora, instances []domain.InstanceObservation) (map[string]domain.HealthStatus, error) {
 	instances = enabledInstances(resource, instances)
-	jobCtx, cancel := context.WithTimeout(ctx, m.jobTimeout(resource, len(instances)))
-	defer cancel()
-	readyByInstance, err := m.readyPodsByInstance(jobCtx, resource)
+	readyByInstance, err := m.readyPodsByInstance(ctx, resource)
 	if err != nil {
 		return nil, err
 	}
@@ -56,49 +49,51 @@ func (m ProbeMonitor) Check(ctx context.Context, resource *v1alpha1.PgBouncerAur
 	if len(readyInstances) == 0 {
 		return out, nil
 	}
-	creds, err := m.credentials(jobCtx, resource)
+	creds, err := m.credentials(ctx, resource)
 	if err != nil {
 		return nil, err
 	}
-	limit := monitorConcurrency(len(readyInstances))
+	limit := m.workersPerCR(len(readyInstances))
+	jobs := make(chan domain.InstanceObservation)
 	results := make(chan probeResult, len(readyInstances))
-	sem := make(chan struct{}, limit)
 	var wg sync.WaitGroup
-	remaining := make(map[string]domain.InstanceObservation, len(readyInstances))
-	for _, instance := range readyInstances {
-		remaining[instance.Name] = instance
-		instance := instance
+	for i := 0; i < limit; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			select {
-			case sem <- struct{}{}:
-				defer func() { <-sem }()
-			case <-jobCtx.Done():
-				results <- probeResult{name: instance.Name, err: fmt.Errorf("monitor job timed out before probe started: %w", jobCtx.Err())}
-				return
-			}
-			if m.ProbeLimiter != nil {
-				if err := m.ProbeLimiter.Wait(jobCtx); err != nil {
-					results <- probeResult{name: instance.Name, err: fmt.Errorf("probe rate limited or monitor job timed out: %w", err)}
+			for instance := range jobs {
+				status := m.checkInstance(ctx, resource, factory, creds, instance)
+				if err := ctx.Err(); err != nil {
+					results <- probeResult{name: instance.Name, err: fmt.Errorf("monitor job canceled: %w", err)}
+					return
+				}
+				status.ReadyReplicas = int32(readyByInstance[instance.Name])
+				select {
+				case results <- probeResult{name: instance.Name, status: status}:
+				case <-ctx.Done():
 					return
 				}
 			}
-			status := m.checkInstance(jobCtx, resource, factory, creds, instance)
-			if err := jobCtx.Err(); err != nil {
-				results <- probeResult{name: instance.Name, err: fmt.Errorf("monitor job timed out: %w", err)}
-				return
-			}
-			status.ReadyReplicas = int32(readyByInstance[instance.Name])
-			results <- probeResult{name: instance.Name, status: status}
 		}()
 	}
-	done := make(chan struct{})
+	go func() {
+		defer close(jobs)
+		for _, instance := range readyInstances {
+			select {
+			case jobs <- instance:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
 	go func() {
 		wg.Wait()
-		close(done)
 		close(results)
 	}()
+	remaining := make(map[string]domain.InstanceObservation, len(readyInstances))
+	for _, instance := range readyInstances {
+		remaining[instance.Name] = instance
+	}
 	for len(remaining) > 0 {
 		select {
 		case result, ok := <-results:
@@ -113,20 +108,8 @@ func (m ProbeMonitor) Check(ctx context.Context, resource *v1alpha1.PgBouncerAur
 			}
 			out[result.name] = result.status
 			delete(remaining, result.name)
-		case <-done:
-			for result := range results {
-				if result.err != nil {
-					return nil, result.err
-				}
-				out[result.name] = result.status
-				delete(remaining, result.name)
-			}
-			if len(remaining) > 0 {
-				return nil, fmt.Errorf("monitor job finished before %d probe result(s) were collected", len(remaining))
-			}
-			return out, nil
-		case <-jobCtx.Done():
-			return nil, fmt.Errorf("monitor job timed out: %w", jobCtx.Err())
+		case <-ctx.Done():
+			return nil, fmt.Errorf("monitor job canceled: %w", ctx.Err())
 		}
 	}
 	return out, nil
@@ -155,27 +138,17 @@ func instanceDisabled(spec v1alpha1.PgBouncerSpec, instanceName string) bool {
 	return false
 }
 
-func (m ProbeMonitor) jobTimeout(resource *v1alpha1.PgBouncerAurora, instanceCount int) time.Duration {
-	if m.JobTimeout > 0 {
-		return m.JobTimeout
-	}
-	timeout := monitorProbeTimeout(resource)
-	concurrency := monitorConcurrency(instanceCount)
-	batches := 1
-	if instanceCount > 0 && concurrency > 0 {
-		batches = (instanceCount + concurrency - 1) / concurrency
-	}
-	return clampDuration(time.Duration(batches)*timeout+2*time.Second, 8*time.Second, 30*time.Second)
-}
-
 type probeResult struct {
 	name   string
 	status domain.HealthStatus
 	err    error
 }
 
-func monitorConcurrency(readyCount int) int {
-	limit := defaultMonitorProbeConcurrency
+func (m ProbeMonitor) workersPerCR(readyCount int) int {
+	limit := m.WorkersPerCR
+	if limit <= 0 {
+		limit = defaultWorkersPerCR
+	}
 	if readyCount > 0 && limit > readyCount {
 		return readyCount
 	}
@@ -187,16 +160,6 @@ func monitorProbeTimeout(resource *v1alpha1.PgBouncerAurora) time.Duration {
 		return resource.Spec.Monitor.Timeout.Duration
 	}
 	return 3 * time.Second
-}
-
-func clampDuration(value, minValue, maxValue time.Duration) time.Duration {
-	if value < minValue {
-		return minValue
-	}
-	if value > maxValue {
-		return maxValue
-	}
-	return value
 }
 
 func (m ProbeMonitor) readyPodsByInstance(ctx context.Context, resource *v1alpha1.PgBouncerAurora) (map[string]int, error) {

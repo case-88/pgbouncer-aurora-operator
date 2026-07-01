@@ -35,28 +35,20 @@ func TestSchedulerEnqueuesDueResources(t *testing.T) {
 	notDue.Status.LastKnownTopology.Instances = []v1alpha1.InstanceTopologyStatus{{InstanceName: "db-1", Endpoint: "db-1.example", Port: 5432, Role: v1alpha1.RoleWriter}}
 	notDue.Status.Instances = []v1alpha1.InstanceStatus{{InstanceName: "db-1", Healthy: true}}
 
-	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(due, notDue).Build()
+	c := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(&v1alpha1.PgBouncerAurora{}).WithObjects(due, notDue).Build()
 	events := make(chan event.GenericEvent, 4)
-	discoveryJobs := make(chan types.NamespacedName, 4)
-	monitorJobs := make(chan types.NamespacedName, 4)
 	scheduler := Scheduler{
-		Client:        c,
-		Events:        events,
-		Namespace:     due.Namespace,
-		WatchName:     "*",
-		discoveryJobs: discoveryJobs,
-		monitorJobs:   monitorJobs,
-		inFlight:      map[string]struct{}{},
+		Client: c,
+		Discovery: fakeDiscovery{result: domain.DiscoveryResult{Trusted: true, Instances: []domain.InstanceObservation{{
+			Name: "db-1", Endpoint: "db-1.example", Port: 5432, Role: domain.RoleWriter,
+		}}}},
+		Events:    events,
+		Namespace: due.Namespace,
+		WatchName: "*",
 	}
 	scheduler.enqueueDue(context.Background())
 
-	if len(discoveryJobs) != 1 {
-		t.Fatalf("expected one due discovery job, got %d", len(discoveryJobs))
-	}
-	got := <-discoveryJobs
-	if got.Name != "due" {
-		t.Fatalf("enqueued object = %s", got.Name)
-	}
+	requireEvent(t, events, "due")
 }
 
 func TestDiscoveryDueRespectsIntervalAfterInitialFailure(t *testing.T) {
@@ -165,27 +157,24 @@ func TestSchedulerHonorsWatchName(t *testing.T) {
 	scheme := testScheme(t)
 	resource := sampleResource()
 	resource.Name = "target"
-	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(resource).Build()
+	c := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(&v1alpha1.PgBouncerAurora{}).WithObjects(resource).Build()
 	events := make(chan event.GenericEvent, 4)
-	discoveryJobs := make(chan types.NamespacedName, 4)
 	scheduler := Scheduler{
-		Client:        c,
-		Events:        events,
-		Namespace:     resource.Namespace,
-		WatchName:     "other",
-		discoveryJobs: discoveryJobs,
-		monitorJobs:   make(chan types.NamespacedName, 4),
-		inFlight:      map[string]struct{}{},
+		Client: c,
+		Discovery: fakeDiscovery{result: domain.DiscoveryResult{Trusted: true, Instances: []domain.InstanceObservation{{
+			Name: "db-1", Endpoint: "db-1.example", Port: 5432, Role: domain.RoleWriter,
+		}}}},
+		Events:    events,
+		Namespace: resource.Namespace,
+		WatchName: "other",
 	}
 	scheduler.enqueueDue(context.Background())
-	if len(discoveryJobs) != 0 {
-		t.Fatalf("watch-names mismatch should not enqueue discovery")
+	if len(scheduler.inFlight) != 0 {
+		t.Fatalf("watch-names mismatch should not schedule discovery")
 	}
 	scheduler.WatchName = "other,target"
 	scheduler.enqueueDue(context.Background())
-	if len(discoveryJobs) != 1 {
-		t.Fatalf("watch-names match should enqueue discovery")
-	}
+	requireEvent(t, events, "target")
 }
 
 func TestSchedulerDiscoveryJobUpdatesTopologyAndEnqueuesReconcile(t *testing.T) {
@@ -202,7 +191,7 @@ func TestSchedulerDiscoveryJobUpdatesTopologyAndEnqueuesReconcile(t *testing.T) 
 		Events: events,
 	}
 
-	scheduler.runDiscoveryJob(ctx, 0, types.NamespacedName{Name: resource.Name, Namespace: resource.Namespace})
+	scheduler.runDiscoveryJob(ctx, types.NamespacedName{Name: resource.Name, Namespace: resource.Namespace})
 
 	updated := &v1alpha1.PgBouncerAurora{}
 	if err := c.Get(ctx, types.NamespacedName{Name: resource.Name, Namespace: resource.Namespace}, updated); err != nil {
@@ -243,7 +232,7 @@ func TestSchedulerDiscoveryJobCountsCachedDiscoveryFailure(t *testing.T) {
 		Events:    events,
 	}
 
-	scheduler.runDiscoveryJob(ctx, 0, types.NamespacedName{Name: resource.Name, Namespace: resource.Namespace})
+	scheduler.runDiscoveryJob(ctx, types.NamespacedName{Name: resource.Name, Namespace: resource.Namespace})
 
 	updated := &v1alpha1.PgBouncerAurora{}
 	if err := c.Get(ctx, types.NamespacedName{Name: resource.Name, Namespace: resource.Namespace}, updated); err != nil {
@@ -290,7 +279,7 @@ func TestSchedulerMonitorJobUpdatesHealthAndEnqueuesReconcile(t *testing.T) {
 		Events:  events,
 	}
 
-	scheduler.runMonitorJob(ctx, 0, types.NamespacedName{Name: resource.Name, Namespace: resource.Namespace})
+	scheduler.runMonitorJob(ctx, types.NamespacedName{Name: resource.Name, Namespace: resource.Namespace})
 
 	updated := &v1alpha1.PgBouncerAurora{}
 	if err := c.Get(ctx, types.NamespacedName{Name: resource.Name, Namespace: resource.Namespace}, updated); err != nil {
@@ -304,5 +293,17 @@ func TestSchedulerMonitorJobUpdatesHealthAndEnqueuesReconcile(t *testing.T) {
 	}
 	if len(events) != 1 {
 		t.Fatalf("expected reconcile event, got %d", len(events))
+	}
+}
+
+func requireEvent(t *testing.T, events <-chan event.GenericEvent, name string) {
+	t.Helper()
+	select {
+	case got := <-events:
+		if got.Object.GetName() != name {
+			t.Fatalf("event object = %s, want %s", got.Object.GetName(), name)
+		}
+	case <-time.After(time.Second):
+		t.Fatalf("timed out waiting for reconcile event for %s", name)
 	}
 }

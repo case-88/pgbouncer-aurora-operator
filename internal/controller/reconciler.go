@@ -67,7 +67,7 @@ const (
 	defaultDiscoveryInterval = 3 * time.Second
 	defaultMonitorInterval   = 10 * time.Second
 	minCheckInterval         = time.Second
-	defaultMaxReconciles     = 2
+	defaultMaxReconciles     = 64
 )
 
 func (r *PgBouncerAuroraReconciler) refreshResourceFromAPI(ctx context.Context, key types.NamespacedName, resource *v1alpha1.PgBouncerAurora) error {

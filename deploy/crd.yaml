@@ -107,9 +107,6 @@ spec:
                     interval:
                       type: string
                       default: 3s
-                    metadataRefreshInterval:
-                      type: string
-                      default: 1m
                     timeout:
                       type: string
                       default: 3s

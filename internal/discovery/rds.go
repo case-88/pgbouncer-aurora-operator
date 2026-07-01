@@ -29,6 +29,7 @@ type RDSMetadataResolver struct {
 	CacheTTL    time.Duration
 	Now         func() time.Time
 	RateLimiter WaitLimiter
+	CachedOnly  bool
 
 	mu    sync.Mutex
 	cache map[string]cachedInstanceMetadata
@@ -65,16 +66,41 @@ func (r *RDSMetadataResolver) Resolve(ctx context.Context, resource *v1alpha1.Pg
 		return nil, fmt.Errorf("discovery.clusterName is required for RDS metadata inventory")
 	}
 	now := r.now()
-	ttl := r.cacheTTL(resource)
 	r.prune(now)
 	requestedNames := uniqueSorted(instanceNames)
-	forceRefresh := reappearedInstanceRequested(resource, requestedNames)
+	reappearedNames := reappearedInstanceNames(resource, requestedNames)
+	forceRefresh := len(reappearedNames) > 0
+	if r.CachedOnly {
+		if cached, ok := r.clusterSnapshot(clusterName, now); ok {
+			for name := range reappearedNames {
+				delete(cached, name)
+			}
+			logger.V(1).Info("rds metadata cache hit",
+				"cluster", clusterName,
+				"instances", len(cached),
+				"ttl", r.cacheTTL().String(),
+			)
+			return cached, nil
+		}
+		if len(reappearedNames) > 0 {
+			logger.V(1).Info("rds metadata cache bypassed",
+				"cluster", clusterName,
+				"reason", "previously missing instance reappeared",
+			)
+			return map[string]InstanceMetadata{}, nil
+		}
+		logger.V(1).Info("rds metadata cache miss; using aurora replica status only",
+			"cluster", clusterName,
+			"requestedInstances", len(requestedNames),
+		)
+		return map[string]InstanceMetadata{}, nil
+	}
 	if !forceRefresh {
 		if cached, ok := r.clusterCached(clusterName, requestedNames, now); ok {
 			logger.V(1).Info("rds metadata cache hit",
 				"cluster", clusterName,
 				"instances", len(cached),
-				"ttl", ttl.String(),
+				"ttl", r.cacheTTL().String(),
 			)
 			return cached, nil
 		}
@@ -84,26 +110,31 @@ func (r *RDSMetadataResolver) Resolve(ctx context.Context, resource *v1alpha1.Pg
 			"reason", "previously missing instance reappeared",
 		)
 	}
+	return r.RefreshCluster(ctx, clusterName)
+}
+
+func (r *RDSMetadataResolver) RefreshCluster(ctx context.Context, clusterName string) (map[string]InstanceMetadata, error) {
+	clusterName = strings.TrimSpace(clusterName)
+	if clusterName == "" {
+		return nil, fmt.Errorf("clusterName is required for RDS metadata refresh")
+	}
+	logger := log.FromContext(ctx)
+	now := r.now()
+	ttl := r.cacheTTL()
+	r.prune(now)
 	logger.V(1).Info("rds metadata refresh started",
 		"cluster", clusterName,
-		"requestedInstances", len(requestedNames),
 		"ttl", ttl.String(),
 	)
 	startedAt := time.Now()
-	if r.RateLimiter != nil {
-		if err := r.RateLimiter.Wait(ctx); err != nil {
-			logger.Error(err, "rds metadata rate limit wait failed",
-				"cluster", clusterName,
-				"duration", time.Since(startedAt).String(),
-			)
-			return nil, err
-		}
-	}
-	if err := r.describeCluster(ctx, clusterName); err != nil {
+	if err := r.describeCluster(ctx, clusterName, startedAt); err != nil {
 		logger.Error(err, "rds cluster metadata refresh failed",
 			"cluster", clusterName,
 			"duration", time.Since(startedAt).String(),
 		)
+		return nil, err
+	}
+	if err := r.waitRateLimit(ctx, clusterName, "DescribeDBInstances", startedAt); err != nil {
 		return nil, err
 	}
 	resp, err := r.Client.DescribeDBInstances(ctx, &rds.DescribeDBInstancesInput{
@@ -120,32 +151,18 @@ func (r *RDSMetadataResolver) Resolve(ctx context.Context, resource *v1alpha1.Pg
 		return nil, err
 	}
 	out := make(map[string]InstanceMetadata, len(resp.DBInstances))
-	stored := 0
-	uncacheable := 0
-	cacheableCluster := true
 	for _, instance := range resp.DBInstances {
 		meta, ok := metadataFromDBInstance(instance)
 		if !ok {
 			continue
 		}
 		out[meta.InstanceName] = meta
-		if cacheableMetadata(resource, meta) {
-			r.store(nameCacheKey(clusterName, meta.InstanceName), meta, now.Add(ttl))
-			stored++
-		} else {
-			cacheableCluster = false
-			uncacheable++
-		}
+		r.store(nameCacheKey(clusterName, meta.InstanceName), meta, now.Add(ttl))
 	}
-	if cacheableCluster {
-		r.storeCluster(clusterName, out, now.Add(ttl))
-	}
+	r.storeCluster(clusterName, out, now.Add(ttl))
 	logger.V(1).Info("rds metadata refresh completed",
 		"cluster", clusterName,
-		"requestedInstances", len(requestedNames),
 		"found", len(out),
-		"stored", stored,
-		"uncacheable", uncacheable,
 		"duration", time.Since(startedAt).String(),
 	)
 	return out, nil
@@ -158,10 +175,7 @@ func (r *RDSMetadataResolver) now() time.Time {
 	return time.Now()
 }
 
-func (r *RDSMetadataResolver) cacheTTL(resource ...*v1alpha1.PgBouncerAurora) time.Duration {
-	if len(resource) > 0 && resource[0] != nil && resource[0].Spec.Discovery.MetadataRefreshInterval.Duration > 0 {
-		return resource[0].Spec.Discovery.MetadataRefreshInterval.Duration
-	}
+func (r *RDSMetadataResolver) cacheTTL() time.Duration {
 	if r.CacheTTL > 0 {
 		return r.CacheTTL
 	}
@@ -169,28 +183,52 @@ func (r *RDSMetadataResolver) cacheTTL(resource ...*v1alpha1.PgBouncerAurora) ti
 }
 
 func reappearedInstanceRequested(resource *v1alpha1.PgBouncerAurora, requestedNames []string) bool {
+	return len(reappearedInstanceNames(resource, requestedNames)) > 0
+}
+
+func reappearedInstanceNames(resource *v1alpha1.PgBouncerAurora, requestedNames []string) map[string]struct{} {
+	out := map[string]struct{}{}
 	if resource == nil || len(resource.Status.MissingInstances) == 0 || len(requestedNames) == 0 {
-		return false
+		return out
 	}
 	requested := map[string]bool{}
 	for _, name := range requestedNames {
 		requested[strings.TrimSpace(name)] = true
 	}
 	for _, missing := range resource.Status.MissingInstances {
-		if requested[strings.TrimSpace(missing.InstanceName)] {
-			return true
+		name := strings.TrimSpace(missing.InstanceName)
+		if requested[name] {
+			out[name] = struct{}{}
 		}
 	}
-	return false
+	return out
 }
 
-func (r *RDSMetadataResolver) describeCluster(ctx context.Context, clusterName string) error {
+func (r *RDSMetadataResolver) describeCluster(ctx context.Context, clusterName string, startedAt time.Time) error {
+	if err := r.waitRateLimit(ctx, clusterName, "DescribeDBClusters", startedAt); err != nil {
+		return err
+	}
 	resp, err := r.Client.DescribeDBClusters(ctx, &rds.DescribeDBClustersInput{DBClusterIdentifier: aws.String(clusterName)})
 	if err != nil {
 		return err
 	}
 	if len(resp.DBClusters) == 0 {
 		return fmt.Errorf("DB cluster %q not found", clusterName)
+	}
+	return nil
+}
+
+func (r *RDSMetadataResolver) waitRateLimit(ctx context.Context, clusterName string, operation string, startedAt time.Time) error {
+	if r.RateLimiter == nil {
+		return nil
+	}
+	if err := r.RateLimiter.Wait(ctx); err != nil {
+		log.FromContext(ctx).Error(err, "rds metadata rate limit wait failed",
+			"cluster", clusterName,
+			"operation", operation,
+			"duration", time.Since(startedAt).String(),
+		)
+		return err
 	}
 	return nil
 }
@@ -217,6 +255,27 @@ func (r *RDSMetadataResolver) clusterCached(clusterName string, requestedNames [
 		if _, ok := out[name]; !ok {
 			return nil, false
 		}
+	}
+	return out, true
+}
+
+func (r *RDSMetadataResolver) clusterSnapshot(clusterName string, now time.Time) (map[string]InstanceMetadata, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.cache == nil {
+		return nil, false
+	}
+	key := clusterCacheKey(clusterName)
+	entry, ok := r.cache[key]
+	if !ok || now.After(entry.expiresAt) {
+		if ok {
+			delete(r.cache, key)
+		}
+		return nil, false
+	}
+	out := map[string]InstanceMetadata{}
+	for name, meta := range entry.cluster {
+		out[name] = meta
 	}
 	return out, true
 }
@@ -292,20 +351,4 @@ func metadataFromDBInstance(instance types.DBInstance) (InstanceMetadata, bool) 
 		meta.Status = *instance.DBInstanceStatus
 	}
 	return meta, true
-}
-
-func cacheableMetadata(resource *v1alpha1.PgBouncerAurora, metadata InstanceMetadata) bool {
-	if resource == nil {
-		return false
-	}
-	if !zoneAwareEnabled(resource) {
-		return false
-	}
-	if metadata.AvailabilityZone == "" {
-		return false
-	}
-	if metadata.DbiResourceId == "" {
-		return false
-	}
-	return true
 }

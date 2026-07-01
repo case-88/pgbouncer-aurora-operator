@@ -39,10 +39,9 @@ type DiscoverySpec struct {
 	// +kubebuilder:validation:Enum=disable;allow;prefer;require;verify-ca;verify-full
 	SSLMode string `json:"sslMode,omitempty"`
 	// +kubebuilder:validation:Required
-	AuthSecretRef           corev1.LocalObjectReference `json:"authSecretRef,omitempty"`
-	Interval                metav1.Duration             `json:"interval,omitempty"`
-	MetadataRefreshInterval metav1.Duration             `json:"metadataRefreshInterval,omitempty"`
-	Timeout                 metav1.Duration             `json:"timeout,omitempty"`
+	AuthSecretRef corev1.LocalObjectReference `json:"authSecretRef,omitempty"`
+	Interval      metav1.Duration             `json:"interval,omitempty"`
+	Timeout       metav1.Duration             `json:"timeout,omitempty"`
 	// +kubebuilder:validation:Minimum=1
 	FailureThreshold int32 `json:"failureThreshold,omitempty"`
 }

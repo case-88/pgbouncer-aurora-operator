@@ -1298,7 +1298,7 @@ func TestGenerationChangedPredicateIgnoresStatusOnlyUpdates(t *testing.T) {
 }
 
 func TestMaxConcurrentReconcilesDefaultAndOverride(t *testing.T) {
-	if got := (&PgBouncerAuroraReconciler{}).maxConcurrentReconciles(); got != 2 {
+	if got := (&PgBouncerAuroraReconciler{}).maxConcurrentReconciles(); got != 64 {
 		t.Fatalf("default max concurrent reconciles mismatch: %d", got)
 	}
 	if got := (&PgBouncerAuroraReconciler{MaxConcurrentReconciles: 3}).maxConcurrentReconciles(); got != 3 {
