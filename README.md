@@ -71,7 +71,7 @@ flowchart LR
   - Determines role from `session_id` (`MASTER_SESSION_ID` = Writer).
   - Instance endpoints are generated deterministically as `{instanceName}.{domainName}`.
   - RDS metadata is used only to enrich the AZ for zone-aware scheduling and `DbiResourceId` (physical instance identity); it is not used as the topology source of truth.
-  - A failed RDS metadata refresh does not drop a healthy Aurora SQL discovery to untrusted.
+  - RDS API failures or timeouts do not affect normal Discovery. RDS metadata is currently referenced only for zone-aware configuration.
 
 - **Rendering**
   - Creates one ConfigMap, Deployment, and Service per discovered Aurora DB instance.
@@ -186,7 +186,7 @@ The AWS docs recommend "listing individual instance nodes in a host-list" for th
 | Kubernetes | `>= 1.27` recommended | Uses `apiextensions.k8s.io/v1`, `apps/v1`, `rbac.authorization.k8s.io/v1`, and standard Service/Pod APIs. Lower versions may work but are not yet targeted. |
 | Aurora PostgreSQL | Aurora PostgreSQL with `aurora_replica_status()` | Discovery depends on `select server_id, session_id from aurora_replica_status()`. |
 | PgBouncer | `1.25.2` verified | Verified with PgBouncer `1.25.2`; provide your own image (see `spec.pgbouncer.image`). Other versions may work if the config options are compatible. |
-| AWS IAM | `rds:DescribeDBClusters`, `rds:DescribeDBInstances` | Needed to look up AZ and `DbiResourceId` when zone-aware placement is enabled. Even if the AWS API refresh fails, Aurora SQL discovery remains the topology source of truth. EKS IRSA recommended. |
+| AWS IAM | `rds:DescribeDBClusters`, `rds:DescribeDBInstances` | Needed only for the RDS metadata referenced by zone-aware configuration. RDS API failures or timeouts do not affect normal Discovery. EKS IRSA recommended. |
 | Network | Pod→Aurora connectivity | The operator and PgBouncer Pods must be able to reach the Aurora endpoints/ports. |
 
 ### Build / test tools
@@ -316,7 +316,7 @@ Endpoint generation rules:
 - Reader endpoint: `{clusterName}.cluster-ro-{domainName}`
 - Instance endpoint: `{dbInstanceIdentifier}.{domainName}`
 
-`spec.discovery.interval` defaults to `3s` to follow Aurora failover quickly. This only raises the Aurora topology query frequency. AWS RDS metadata calls for the auxiliary AZ/`DbiResourceId` data are refreshed by the operator-level shared metadata worker. An RDS API failure or timeout only degrades zone-aware placement and physical-identity freshness; it does not invalidate a healthy `aurora_replica_status()` topology.
+`spec.discovery.interval` defaults to `3s` to follow Aurora failover quickly. This only raises the Aurora topology query frequency. AWS RDS metadata calls for the auxiliary AZ/`DbiResourceId` data are refreshed by the operator-level shared metadata worker. RDS API failures or timeouts do not affect normal Discovery. RDS metadata is currently referenced only for zone-aware configuration.
 
 The operator does not infer the AWS region from `spec.discovery.domainName`. RDS metadata lookups use the operator process flag `--aws-region`, so this region must match the region of the Aurora cluster that `domainName` points at. For multi-region operation, run a separate operator deployment per region.
 
