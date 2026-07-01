@@ -39,6 +39,8 @@ func TestCRDRequiresRuntimeCriticalFields(t *testing.T) {
 	assertMinLength(t, objectAt(t, pgbouncer, "properties", "image"), 1)
 	assertRequired(t, objectAt(t, pgbouncer, "properties", "authFileSecretRef"), "name")
 	assertMinLength(t, objectAt(t, pgbouncer, "properties", "authFileSecretRef", "properties", "name"), 1)
+	instanceOverride := objectAt(t, pgbouncer, "properties", "instanceOverrides", "items")
+	assertDefault(t, objectAt(t, instanceOverride, "properties", "enabled"), true)
 
 	services := objectAt(t, specSchema, "properties", "services")
 	assertDefault(t, objectAt(t, services, "properties", "writer", "properties", "name"), "writer")
@@ -133,11 +135,11 @@ func assertNoDefault(t *testing.T, schema map[string]any) {
 	}
 }
 
-func assertDefault(t *testing.T, schema map[string]any, want string) {
+func assertDefault(t *testing.T, schema map[string]any, want any) {
 	t.Helper()
-	got, ok := schema["default"].(string)
+	got, ok := schema["default"]
 	if !ok || got != want {
-		t.Fatalf("default mismatch: got %#v want %q in %#v", schema["default"], want, schema)
+		t.Fatalf("default mismatch: got %#v want %#v in %#v", schema["default"], want, schema)
 	}
 }
 

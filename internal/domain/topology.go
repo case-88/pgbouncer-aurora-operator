@@ -34,6 +34,7 @@ type HealthStatus struct {
 type InstancePlan struct {
 	InstanceObservation
 	Healthy              bool
+	Disabled             bool
 	Reason               string
 	Replicas             int32
 	ReadyReplicas        int32

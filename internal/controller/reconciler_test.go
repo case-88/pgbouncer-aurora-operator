@@ -65,6 +65,16 @@ func (f *countingMonitor) Check(ctx context.Context, resource *v1alpha1.PgBounce
 	return f.health, nil
 }
 
+type recordingMonitor struct {
+	instances []domain.InstanceObservation
+	health    map[string]domain.HealthStatus
+}
+
+func (f *recordingMonitor) Check(ctx context.Context, resource *v1alpha1.PgBouncerAurora, instances []domain.InstanceObservation) (map[string]domain.HealthStatus, error) {
+	f.instances = append([]domain.InstanceObservation(nil), instances...)
+	return f.health, nil
+}
+
 func TestReconcileCreatesInstanceAndRoleResources(t *testing.T) {
 	ctx := context.Background()
 	scheme := testScheme(t)
@@ -1553,6 +1563,63 @@ func TestReconcileDeletesRemovedInstanceAfterRetention(t *testing.T) {
 	}
 	if len(updated.Status.MissingInstances) != 0 {
 		t.Fatalf("deleted missing instance should be dropped from status: %#v", updated.Status.MissingInstances)
+	}
+}
+
+func TestReconcileExcludesDisabledInstanceOverride(t *testing.T) {
+	ctx := context.Background()
+	scheme := testScheme(t)
+	resource := sampleResource()
+	disabled := false
+	resource.Spec.PgBouncer.InstanceOverrides = []v1alpha1.InstanceOverrideSpec{{Name: "db-2", Enabled: &disabled}}
+	oldObjects := staleInstanceObjects(resource, "db-2")
+	client := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&v1alpha1.PgBouncerAurora{}).
+		WithObjects(append([]client.Object{resource}, oldObjects...)...).
+		Build()
+	monitor := &recordingMonitor{health: map[string]domain.HealthStatus{"db-1": {Healthy: true, ReadyReplicas: 1}}}
+	reconciler := &PgBouncerAuroraReconciler{
+		Client: client,
+		Scheme: scheme,
+		Discovery: fakeDiscovery{result: domain.DiscoveryResult{Trusted: true, Instances: []domain.InstanceObservation{
+			{Name: "db-1", Endpoint: "db-1.example", Port: 5432, Role: domain.RoleWriter},
+			{Name: "db-2", Endpoint: "db-2.example", Port: 5432, Role: domain.RoleReader},
+		}}},
+		Monitor: monitor,
+	}
+
+	_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: resource.Name, Namespace: resource.Namespace}})
+	if err != nil {
+		t.Fatalf("reconcile failed: %v", err)
+	}
+
+	if len(monitor.instances) != 1 || monitor.instances[0].Name != "db-1" {
+		t.Fatalf("monitor should only receive enabled instances: %#v", monitor.instances)
+	}
+	assertExists[*corev1.ConfigMap](t, ctx, client, "sample-db-1")
+	assertNotFound[*corev1.ConfigMap](t, ctx, client, "sample-db-2")
+	assertNotFound[*appsv1.Deployment](t, ctx, client, "sample-db-2")
+	assertNotFound[*corev1.Service](t, ctx, client, "sample-db-2")
+
+	updated := &v1alpha1.PgBouncerAurora{}
+	if err := client.Get(ctx, types.NamespacedName{Name: resource.Name, Namespace: resource.Namespace}, updated); err != nil {
+		t.Fatalf("get status failed: %v", err)
+	}
+	if len(updated.Status.LastAppliedMembership.Reader) != 1 || updated.Status.LastAppliedMembership.Reader[0] != "db-1" {
+		t.Fatalf("reader should fallback to enabled writer: %#v", updated.Status.LastAppliedMembership.Reader)
+	}
+	foundDisabled := false
+	for _, instance := range updated.Status.Instances {
+		if instance.InstanceName == "db-2" {
+			foundDisabled = true
+			if !instance.Disabled || instance.Healthy || instance.DesiredReplicas != 0 || instance.Reason != "disabled by spec.pgbouncer.instanceOverrides" {
+				t.Fatalf("disabled instance status mismatch: %#v", instance)
+			}
+		}
+	}
+	if !foundDisabled {
+		t.Fatalf("disabled instance should remain visible in status: %#v", updated.Status.Instances)
 	}
 }
 

@@ -105,6 +105,7 @@ type PgBouncerConfigSpec struct {
 type InstanceOverrideSpec struct {
 	// +kubebuilder:validation:MinLength=1
 	Name     string              `json:"name,omitempty"`
+	Enabled  *bool               `json:"enabled,omitempty"`
 	Replicas int32               `json:"replicas,omitempty"`
 	Config   PgBouncerConfigSpec `json:"config,omitempty"`
 }
@@ -237,6 +238,7 @@ type InstanceStatus struct {
 	Role                 Role   `json:"role,omitempty"`
 	AvailabilityZone     string `json:"availabilityZone,omitempty"`
 	DbiResourceId        string `json:"dbiResourceId,omitempty"`
+	Disabled             bool   `json:"disabled,omitempty"`
 	Healthy              bool   `json:"healthy,omitempty"`
 	DesiredReplicas      int32  `json:"desiredReplicas,omitempty"`
 	ReadyReplicas        int32  `json:"readyReplicas,omitempty"`
@@ -309,6 +311,10 @@ func deepCopySpec(in PgBouncerAuroraSpec) PgBouncerAuroraSpec {
 		out.PgBouncer.InstanceOverrides = make([]InstanceOverrideSpec, len(in.PgBouncer.InstanceOverrides))
 		for i := range in.PgBouncer.InstanceOverrides {
 			out.PgBouncer.InstanceOverrides[i] = in.PgBouncer.InstanceOverrides[i]
+			if in.PgBouncer.InstanceOverrides[i].Enabled != nil {
+				out.PgBouncer.InstanceOverrides[i].Enabled = new(bool)
+				*out.PgBouncer.InstanceOverrides[i].Enabled = *in.PgBouncer.InstanceOverrides[i].Enabled
+			}
 			out.PgBouncer.InstanceOverrides[i].Config = deepCopyPgBouncerConfigSpec(in.PgBouncer.InstanceOverrides[i].Config)
 		}
 	}

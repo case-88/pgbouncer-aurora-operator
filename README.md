@@ -344,7 +344,7 @@ TLS from PgBouncer to Aurora can be configured through PgBouncer settings such a
 | `spec.pgbouncer.image` | Yes | empty | image reference | Required; no default. This project does not ship a PgBouncer image. Build your own PgBouncer image and host it on a registry your cluster can pull from (e.g. Amazon ECR), or use a third-party hub image. |
 | `spec.pgbouncer.replicas` | No | `1` | replicas | Default replica count for the per-instance PgBouncer Deployment. |
 | `spec.pgbouncer.config` | No | `{}` | PgBouncer config section | Structured PgBouncer config. See below. |
-| `spec.pgbouncer.instanceOverrides[]` | No | `[]` | list | Per-Aurora-instance replicas/config overrides. |
+| `spec.pgbouncer.instanceOverrides[]` | No | `[]` | list | Per-Aurora-instance enable/disable, replicas, and config overrides. |
 | `spec.pgbouncer.authFileSecretRef.name` | Yes | none | Secret name | Secret holding `userlist.txt`. Mounted at the default `auth_file` path `/etc/pgbouncer/userlist.txt`, or at the effective `[pgbouncer].auth_file` path when overridden. |
 | `spec.pgbouncer.resources` | No | `{}` | Kubernetes `ResourceRequirements` | CPU/memory requests/limits for the main PgBouncer container. |
 | `spec.pgbouncer.labels` | No | `{}` | map[string]string | Extra labels on the generated PgBouncer Pod template. Operator-managed labels win on conflict. |
@@ -398,6 +398,7 @@ Invalid PgBouncer config is expected to fail at PgBouncer startup, not at CR adm
 | Option | Required | Default | Unit | Description |
 |---|---:|---|---|---|
 | `spec.pgbouncer.instanceOverrides[].name` | Yes | none | Aurora DB instance identifier | Matches `server_id` from `aurora_replica_status()`. |
+| `spec.pgbouncer.instanceOverrides[].enabled` | No | `true` | boolean | Set to `false` to intentionally exclude that discovered instance from PgBouncer resources, monitor probes, and Writer/Reader Service membership. The instance remains visible in status as disabled. |
 | `spec.pgbouncer.instanceOverrides[].replicas` | No | `spec.pgbouncer.replicas` | replicas | PgBouncer Deployment replica count for that instance. |
 | `spec.pgbouncer.instanceOverrides[].config` | No | `{}` | PgBouncer config section | Deep-merged on top of `spec.pgbouncer.config` for that instance. |
 

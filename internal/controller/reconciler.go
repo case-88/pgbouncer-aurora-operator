@@ -341,6 +341,9 @@ func (r *PgBouncerAuroraReconciler) applyWriterFailoverFastPath(ctx context.Cont
 	if newWriter == "" || sameStringSet(resource.Status.LastAppliedMembership.Writer, []string{newWriter}) || len(resource.Status.LastAppliedMembership.Writer) == 0 {
 		return nil
 	}
+	if instanceDisabled(resource.Spec.PgBouncer, newWriter) {
+		return nil
+	}
 	if sameStringSet(plan.Membership.Writer, []string{newWriter}) {
 		return nil
 	}
@@ -522,6 +525,7 @@ type instanceApplyShape struct {
 	Role             v1alpha1.Role `json:"role,omitempty"`
 	AvailabilityZone string        `json:"availabilityZone,omitempty"`
 	DbiResourceId    string        `json:"dbiResourceId,omitempty"`
+	Disabled         bool          `json:"disabled,omitempty"`
 	Replicas         int32         `json:"replicas,omitempty"`
 }
 
@@ -535,6 +539,7 @@ func instanceApplyShapeFromPlan(instances []domain.InstancePlan) []instanceApply
 			Role:             instance.Role,
 			AvailabilityZone: instance.AvailabilityZone,
 			DbiResourceId:    instance.DbiResourceId,
+			Disabled:         instance.Disabled,
 			Replicas:         instance.Replicas,
 		})
 	}
@@ -552,6 +557,7 @@ func instanceApplyShapeFromStatus(instances []v1alpha1.InstanceStatus) []instanc
 			Role:             instance.Role,
 			AvailabilityZone: instance.AvailabilityZone,
 			DbiResourceId:    instance.DbiResourceId,
+			Disabled:         instance.Disabled,
 			Replicas:         instance.DesiredReplicas,
 		})
 	}
@@ -629,7 +635,7 @@ func configMapDrifted(resource *v1alpha1.PgBouncerAurora, plan planner.Output, c
 		configMap := &configMaps.Items[i]
 		byName[configMap.Name] = configMap
 	}
-	for _, instance := range plan.Instances {
+	for _, instance := range activePlanInstances(plan.Instances) {
 		expected := render.ConfigMap(resource, instance.InstanceObservation)
 		existing := byName[expected.Name]
 		if existing == nil {
@@ -648,7 +654,7 @@ func serviceDrifted(resource *v1alpha1.PgBouncerAurora, plan planner.Output, ser
 		service := &services.Items[i]
 		byName[service.Name] = service
 	}
-	for _, instance := range plan.Instances {
+	for _, instance := range activePlanInstances(plan.Instances) {
 		expected := render.InstanceService(resource, instance)
 		existing := byName[expected.Name]
 		if existing != nil && serviceSpecDrifted(existing, expected) {
@@ -696,7 +702,7 @@ func servicePortsEqualIgnoringAllocated(left []corev1.ServicePort, right []corev
 }
 
 func (r *PgBouncerAuroraReconciler) deploymentTemplateDrifted(ctx context.Context, resource *v1alpha1.PgBouncerAurora, plan planner.Output, deployments *appsv1.DeploymentList) (bool, error) {
-	if len(plan.Instances) == 0 {
+	if len(activePlanInstances(plan.Instances)) == 0 {
 		return false, nil
 	}
 	byName := make(map[string]*appsv1.Deployment, len(deployments.Items))
@@ -705,7 +711,7 @@ func (r *PgBouncerAuroraReconciler) deploymentTemplateDrifted(ctx context.Contex
 		byName[deployment.Name] = deployment
 	}
 	authFileHash := r.authFileHash(ctx, resource)
-	for _, instance := range plan.Instances {
+	for _, instance := range activePlanInstances(plan.Instances) {
 		expected := render.InstanceDeployment(render.InstanceRenderInput{Owner: resource, Instance: instance, AuthFileHash: authFileHash})
 		existing := byName[expected.Name]
 		if existing == nil {
@@ -823,7 +829,7 @@ func expectedManagedResourceNames(resource *v1alpha1.PgBouncerAurora, plan plann
 		"deployment": {},
 		"service":    {},
 	}
-	for _, instance := range plan.Instances {
+	for _, instance := range activePlanInstances(plan.Instances) {
 		name := render.InstanceResourceName(resource.Name, instance.Name)
 		out["configmap"][name] = true
 		out["deployment"][name] = true
@@ -909,7 +915,7 @@ func (r *PgBouncerAuroraReconciler) podMembershipLabelDrifted(ctx context.Contex
 	}
 	writer := stringSet(plan.Membership.Writer)
 	reader := stringSet(plan.Membership.Reader)
-	roles := instanceRoleSet(plan.Instances)
+	roles := instanceRoleSet(activePlanInstances(plan.Instances))
 	for i := range pods.Items {
 		pod := &pods.Items[i]
 		instanceName := pod.Labels[render.LabelInstance]
@@ -1099,7 +1105,7 @@ func (r *PgBouncerAuroraReconciler) healthFor(
 		shouldRunMonitor = readinessChanged
 	}
 	if shouldRunMonitor {
-		health, err := r.Monitor.Check(ctx, resource, discovery.Instances)
+		health, err := r.Monitor.Check(ctx, resource, activeDiscoveryInstances(resource, discovery.Instances))
 		if err != nil {
 			return healthFromStatus(resource.Status.Instances), false, true, err.Error(), nil
 		}
@@ -1205,6 +1211,17 @@ func topologyObservations(statuses []v1alpha1.InstanceTopologyStatus) []domain.I
 	return out
 }
 
+func activeDiscoveryInstances(resource *v1alpha1.PgBouncerAurora, instances []domain.InstanceObservation) []domain.InstanceObservation {
+	out := make([]domain.InstanceObservation, 0, len(instances))
+	for _, instance := range instances {
+		if resource != nil && instanceDisabled(resource.Spec.PgBouncer, instance.Name) {
+			continue
+		}
+		out = append(out, instance)
+	}
+	return out
+}
+
 func healthFromStatus(statuses []v1alpha1.InstanceStatus) map[string]domain.HealthStatus {
 	out := make(map[string]domain.HealthStatus, len(statuses))
 	for _, status := range statuses {
@@ -1240,10 +1257,11 @@ func topologyChanged(instances []domain.InstanceObservation, statuses []v1alpha1
 
 func (r *PgBouncerAuroraReconciler) applyDesired(ctx context.Context, resource *v1alpha1.PgBouncerAurora, plan planner.Output) error {
 	authFileHash := ""
-	if len(plan.Instances) > 0 {
+	activeInstances := activePlanInstances(plan.Instances)
+	if len(activeInstances) > 0 {
 		authFileHash = r.authFileHash(ctx, resource)
 	}
-	for _, instance := range plan.Instances {
+	for _, instance := range activeInstances {
 		cm := render.ConfigMap(resource, instance.InstanceObservation)
 		deployment := render.InstanceDeployment(render.InstanceRenderInput{Owner: resource, Instance: instance, AuthFileHash: authFileHash})
 		service := render.InstanceService(resource, instance)
@@ -1270,6 +1288,21 @@ func (r *PgBouncerAuroraReconciler) applyDesired(ctx context.Context, resource *
 	}
 	if err := r.cleanupStaleRoleServices(ctx, resource); err != nil {
 		return err
+	}
+	if err := r.cleanupDisabledInstanceResources(ctx, resource, plan); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (r *PgBouncerAuroraReconciler) cleanupDisabledInstanceResources(ctx context.Context, resource *v1alpha1.PgBouncerAurora, plan planner.Output) error {
+	for _, instance := range plan.Instances {
+		if !instance.Disabled {
+			continue
+		}
+		if err := r.deleteInstanceResources(ctx, resource, instance.Name); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -1428,7 +1461,7 @@ func (r *PgBouncerAuroraReconciler) handleWriterChangeConnection(ctx context.Con
 			names[name] = true
 		}
 	case v1alpha1.WriterChangeRestartAll:
-		for _, instance := range plan.Instances {
+		for _, instance := range activePlanInstances(plan.Instances) {
 			names[instance.Name] = true
 		}
 		for _, name := range resource.Status.LastAppliedMembership.Writer {
@@ -1658,7 +1691,7 @@ func (r *PgBouncerAuroraReconciler) patchPodMembership(ctx context.Context, reso
 	}
 	writer := stringSet(plan.Membership.Writer)
 	reader := stringSet(plan.Membership.Reader)
-	roles := instanceRoleSet(plan.Instances)
+	roles := instanceRoleSet(activePlanInstances(plan.Instances))
 	for i := range pods.Items {
 		updated, err := r.patchPodMembershipAdditions(ctx, &pods.Items[i], writer, reader, roles)
 		if err != nil {
@@ -1740,6 +1773,26 @@ func instanceRoleSet(instances []domain.InstancePlan) map[string]v1alpha1.Role {
 		}
 	}
 	return out
+}
+
+func activePlanInstances(instances []domain.InstancePlan) []domain.InstancePlan {
+	out := make([]domain.InstancePlan, 0, len(instances))
+	for _, instance := range instances {
+		if instance.Disabled {
+			continue
+		}
+		out = append(out, instance)
+	}
+	return out
+}
+
+func instanceDisabled(spec v1alpha1.PgBouncerSpec, instanceName string) bool {
+	for _, override := range spec.InstanceOverrides {
+		if override.Name == instanceName && override.Enabled != nil && !*override.Enabled {
+			return true
+		}
+	}
+	return false
 }
 
 func stringSet(values []string) map[string]bool {
@@ -1937,6 +1990,7 @@ func instanceStatus(instances []domain.InstancePlan) []v1alpha1.InstanceStatus {
 			Role:                 instance.Role,
 			AvailabilityZone:     instance.AvailabilityZone,
 			DbiResourceId:        instance.DbiResourceId,
+			Disabled:             instance.Disabled,
 			Healthy:              instance.Healthy,
 			DesiredReplicas:      instance.Replicas,
 			ReadyReplicas:        instance.ReadyReplicas,
@@ -1949,9 +2003,10 @@ func instanceStatus(instances []domain.InstancePlan) []v1alpha1.InstanceStatus {
 }
 
 func serviceSummaryStatus(resource *v1alpha1.PgBouncerAurora, plan planner.Output) v1alpha1.ServiceSummaryStatus {
+	activeInstances := activePlanInstances(plan.Instances)
 	return v1alpha1.ServiceSummaryStatus{
-		Writer: roleServiceSummary(resource, plan.Instances, plan.Membership.Writer, v1alpha1.RoleWriter),
-		Reader: roleServiceSummary(resource, plan.Instances, plan.Membership.Reader, v1alpha1.RoleReader),
+		Writer: roleServiceSummary(resource, activeInstances, plan.Membership.Writer, v1alpha1.RoleWriter),
+		Reader: roleServiceSummary(resource, activeInstances, plan.Membership.Reader, v1alpha1.RoleReader),
 	}
 }
 
@@ -2120,7 +2175,7 @@ func zoneAwareConflictCondition(resource *v1alpha1.PgBouncerAurora, plan planner
 	topologyKey := firstNonEmpty(zoneAware.TopologyKey, "topology.kubernetes.io/zone")
 	messages := make([]string, 0)
 	nodeSelector := effectiveNodeSelector(resource)
-	for _, instance := range plan.Instances {
+	for _, instance := range activePlanInstances(plan.Instances) {
 		if instance.AvailabilityZone == "" {
 			continue
 		}
@@ -2236,7 +2291,7 @@ func trafficTransitionCondition(discovery domain.DiscoveryResult, plan planner.O
 		members[name] = struct{}{}
 	}
 	pending := make([]string, 0)
-	for _, instance := range plan.Instances {
+	for _, instance := range activePlanInstances(plan.Instances) {
 		if _, ok := members[instance.Name]; ok {
 			continue
 		}
@@ -2260,11 +2315,12 @@ func trafficTransitionCondition(discovery domain.DiscoveryResult, plan planner.O
 }
 
 func backendHealthyCondition(plan planner.Output) (metav1.ConditionStatus, string, string) {
-	if len(plan.Instances) == 0 {
+	instances := activePlanInstances(plan.Instances)
+	if len(instances) == 0 {
 		return metav1.ConditionFalse, "NoBackends", "no backend instances"
 	}
 	unhealthy := make([]string, 0)
-	for _, instance := range plan.Instances {
+	for _, instance := range instances {
 		if instance.Healthy {
 			continue
 		}
@@ -2290,8 +2346,9 @@ func roleReadyCondition(resource *v1alpha1.PgBouncerAurora, plan planner.Output,
 	if len(members) == 0 {
 		return metav1.ConditionFalse, fmt.Sprintf("No%sMembers", roleName), ""
 	}
-	instances := make(map[string]domain.InstancePlan, len(plan.Instances))
-	for _, instance := range plan.Instances {
+	activeInstances := activePlanInstances(plan.Instances)
+	instances := make(map[string]domain.InstancePlan, len(activeInstances))
+	for _, instance := range activeInstances {
 		instances[instance.Name] = instance
 	}
 	notReady := make([]string, 0)
@@ -2383,7 +2440,7 @@ func degradedPlanReasons(planReasons []string) []string {
 
 func roleMismatchMessage(plan planner.Output) string {
 	messages := make([]string, 0)
-	for _, instance := range plan.Instances {
+	for _, instance := range activePlanInstances(plan.Instances) {
 		if !strings.Contains(instance.Reason, "role mismatch") {
 			continue
 		}
@@ -2393,8 +2450,9 @@ func roleMismatchMessage(plan planner.Output) string {
 }
 
 func readerFallbackFromWriter(plan planner.Output) bool {
-	instances := make(map[string]domain.InstancePlan, len(plan.Instances))
-	for _, instance := range plan.Instances {
+	activeInstances := activePlanInstances(plan.Instances)
+	instances := make(map[string]domain.InstancePlan, len(activeInstances))
+	for _, instance := range activeInstances {
 		instances[instance.Name] = instance
 	}
 	for _, member := range plan.Membership.Reader {

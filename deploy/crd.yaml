@@ -188,6 +188,9 @@ spec:
                           name:
                             type: string
                             minLength: 1
+                          enabled:
+                            type: boolean
+                            default: true
                           replicas:
                             type: integer
                             format: int32
