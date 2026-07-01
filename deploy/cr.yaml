@@ -102,8 +102,11 @@ spec:
 
     # Per Aurora instance override. name must match server_id from
     # aurora_replica_status(). config is deep-merged over the common config.
+    # Set enabled:false to intentionally exclude a discovered instance from
+    # PgBouncer resources, monitor probes, and Writer/Reader Service membership.
     instanceOverrides:
       - name: example-pg-instance-1
+        enabled: true
         replicas: 2
         config:
           pgbouncer:

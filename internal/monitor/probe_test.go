@@ -106,6 +106,35 @@ func TestProbeMonitorDefaultsToDirectProbe(t *testing.T) {
 	}
 }
 
+func TestProbeMonitorSkipsDisabledInstances(t *testing.T) {
+	resource, c := monitorTestResource(t)
+	disabled := false
+	resource.Spec.PgBouncer.InstanceOverrides = []v1alpha1.InstanceOverrideSpec{{Name: "db-2", Enabled: &disabled}}
+	if err := c.Create(context.Background(), readyPod("pod-2", "db-2")); err != nil {
+		t.Fatal(err)
+	}
+	db, mock := newMockDB(t)
+	defer db.Close()
+	mock.ExpectQuery("select pg_is_in_recovery").WillReturnRows(sqlmock.NewRows([]string{"pg_is_in_recovery", "transaction_read_only"}).AddRow(false, false))
+	factory := &mapDBFactory{dbs: map[string]*sql.DB{"db-1.example": db}}
+	result, err := (ProbeMonitor{Client: c, DBFactory: factory}).Check(context.Background(), resource, []domain.InstanceObservation{
+		{Name: "db-1", Endpoint: "db-1.example", Port: 5432, Role: domain.RoleWriter},
+		{Name: "db-2", Endpoint: "db-2.example", Port: 5432, Role: domain.RoleReader},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := result["db-2"]; ok {
+		t.Fatalf("disabled instance should not be monitored: %#v", result)
+	}
+	if len(factory.seen) != 1 || factory.seen[0].Host != "db-1.example" {
+		t.Fatalf("probe targets = %#v", factory.seen)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestProbeMonitorUsesDiscoverySSLMode(t *testing.T) {
 	resource, c := monitorTestResource(t)
 	resource.Spec.Discovery.SSLMode = "verify-full"

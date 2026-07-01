@@ -861,8 +861,10 @@ const statusHTML = `<!doctype html>
         '<section class="section"><h3>Instances</h3><div class="table-wrap"><table><thead><tr><th>Instance</th><th>Role</th><th>Health</th><th>Ready</th><th>AZ</th><th>DBI</th><th>Endpoint</th></tr></thead><tbody>' +
         instances.map(function(instance) {
           var ready = (instance.readyReplicas || 0) + '/' + (instance.desiredReplicas || 0);
+          var healthClass = instance.disabled ? "idle" : (instance.healthy ? "ok" : "error");
+          var healthLabel = instance.disabled ? "disabled" : (instance.reason || (instance.healthy ? "healthy" : "unhealthy"));
           return '<tr><td class="mono">' + escapeHtml(instance.instanceName) + '</td><td>' + escapeHtml(instance.role) + '</td>' +
-            '<td><span class="condition-pill ' + (instance.healthy ? "ok" : "error") + '">' + escapeHtml(instance.reason || (instance.healthy ? "healthy" : "unhealthy")) + '</span></td>' +
+            '<td><span class="condition-pill ' + healthClass + '">' + escapeHtml(healthLabel) + '</span></td>' +
             '<td>' + ready + '</td><td>' + escapeHtml(instance.availabilityZone || "-") + '</td><td class="mono">' + escapeHtml(instance.dbiResourceId || "-") + '</td>' +
             '<td class="mono">' + escapeHtml(instance.endpoint || "-") + ':' + (instance.port || "-") + '</td></tr>';
         }).join("") +

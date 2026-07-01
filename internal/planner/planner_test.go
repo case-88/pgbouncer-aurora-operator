@@ -116,6 +116,66 @@ func TestPlanReplicaOverride(t *testing.T) {
 	}
 }
 
+func TestPlanDisabledInstanceOverrideExcludesMembership(t *testing.T) {
+	disabled := false
+	resource := &v1alpha1.PgBouncerAurora{}
+	resource.Spec.Monitor.RecoveryThreshold = 1
+	resource.Spec.PgBouncer.InstanceOverrides = []v1alpha1.InstanceOverrideSpec{{Name: "db-2", Enabled: &disabled, Replicas: 3}}
+
+	out := Plan(Input{
+		Resource:         resource,
+		DiscoveryTrusted: true,
+		Discovered: []domain.InstanceObservation{
+			{Name: "db-1", Role: domain.RoleWriter},
+			{Name: "db-2", Role: domain.RoleReader},
+		},
+		Health: map[string]domain.HealthStatus{
+			"db-1": {Healthy: true},
+			"db-2": {Healthy: true},
+		},
+	})
+
+	if len(out.Membership.Writer) != 1 || out.Membership.Writer[0] != "db-1" {
+		t.Fatalf("writer membership = %#v", out.Membership.Writer)
+	}
+	if len(out.Membership.Reader) != 1 || out.Membership.Reader[0] != "db-1" {
+		t.Fatalf("reader should fallback to enabled writer, not disabled reader: %#v", out.Membership.Reader)
+	}
+	if !out.Instances[1].Disabled || out.Instances[1].Replicas != 0 || out.Instances[1].Reason != "disabled by spec.pgbouncer.instanceOverrides" {
+		t.Fatalf("disabled instance status mismatch: %#v", out.Instances[1])
+	}
+}
+
+func TestPlanDisabledWriterDoesNotSilentlyFallback(t *testing.T) {
+	disabled := false
+	resource := &v1alpha1.PgBouncerAurora{}
+	resource.Spec.Monitor.RecoveryThreshold = 1
+	resource.Spec.PgBouncer.InstanceOverrides = []v1alpha1.InstanceOverrideSpec{{Name: "db-1", Enabled: &disabled}}
+
+	out := Plan(Input{
+		Resource:         resource,
+		DiscoveryTrusted: true,
+		Discovered: []domain.InstanceObservation{
+			{Name: "db-1", Role: domain.RoleWriter},
+			{Name: "db-2", Role: domain.RoleReader},
+		},
+		Health: map[string]domain.HealthStatus{
+			"db-1": {Healthy: true},
+			"db-2": {Healthy: true},
+		},
+	})
+
+	if len(out.Membership.Writer) != 0 {
+		t.Fatalf("disabled writer must not become writer membership: %#v", out.Membership.Writer)
+	}
+	if len(out.Membership.Reader) != 1 || out.Membership.Reader[0] != "db-2" {
+		t.Fatalf("reader membership = %#v", out.Membership.Reader)
+	}
+	if !out.Instances[0].Disabled {
+		t.Fatalf("writer should be marked disabled in status plan: %#v", out.Instances[0])
+	}
+}
+
 func TestPlanDoesNotAddMembersWithoutHealth(t *testing.T) {
 	resource := &v1alpha1.PgBouncerAurora{}
 	resource.Spec.Monitor.RecoveryThreshold = 1

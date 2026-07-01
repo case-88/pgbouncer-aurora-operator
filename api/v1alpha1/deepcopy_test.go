@@ -33,7 +33,8 @@ func TestPgBouncerAuroraDeepCopySeparatesMutableFields(t *testing.T) {
 				Volumes:                  []corev1.Volume{{Name: "extra"}},
 				VolumeMounts:             []corev1.VolumeMount{{Name: "extra", MountPath: "/extra"}},
 				InstanceOverrides: []InstanceOverrideSpec{{
-					Name: "db-1",
+					Name:    "db-1",
+					Enabled: boolPtr(true),
 					Config: PgBouncerConfigSpec{
 						PgBouncer: map[string]string{"default_pool_size": "100"},
 						Databases: map[string]map[string]string{"*": {"pool_size": "100"}},
@@ -69,6 +70,7 @@ func TestPgBouncerAuroraDeepCopySeparatesMutableFields(t *testing.T) {
 	copied.Spec.PgBouncer.Sidecars[0].Env[0].Value = "C"
 	copied.Spec.PgBouncer.Volumes[0].Name = "other"
 	copied.Spec.PgBouncer.VolumeMounts[0].MountPath = "/other"
+	*copied.Spec.PgBouncer.InstanceOverrides[0].Enabled = false
 	copied.Spec.PgBouncer.InstanceOverrides[0].Config.PgBouncer["default_pool_size"] = "200"
 	copied.Spec.PgBouncer.InstanceOverrides[0].Config.Databases["*"]["pool_size"] = "200"
 	*copied.Spec.TopologyPolicy.ZoneAware.Enabled = false
@@ -99,6 +101,9 @@ func TestPgBouncerAuroraDeepCopySeparatesMutableFields(t *testing.T) {
 	}
 	if resource.Spec.PgBouncer.InstanceOverrides[0].Config.PgBouncer["default_pool_size"] != "100" {
 		t.Fatalf("instance override alias detected")
+	}
+	if !*resource.Spec.PgBouncer.InstanceOverrides[0].Enabled {
+		t.Fatalf("instance override enabled pointer alias detected")
 	}
 	if resource.Spec.PgBouncer.InstanceOverrides[0].Config.Databases["*"]["pool_size"] != "100" {
 		t.Fatalf("instance database override alias detected")

@@ -32,6 +32,7 @@ type WaitLimiter interface {
 }
 
 func (m ProbeMonitor) Check(ctx context.Context, resource *v1alpha1.PgBouncerAurora, instances []domain.InstanceObservation) (map[string]domain.HealthStatus, error) {
+	instances = enabledInstances(resource, instances)
 	jobCtx, cancel := context.WithTimeout(ctx, m.jobTimeout(resource, len(instances)))
 	defer cancel()
 	readyByInstance, err := m.readyPodsByInstance(jobCtx, resource)
@@ -129,6 +130,29 @@ func (m ProbeMonitor) Check(ctx context.Context, resource *v1alpha1.PgBouncerAur
 		}
 	}
 	return out, nil
+}
+
+func enabledInstances(resource *v1alpha1.PgBouncerAurora, instances []domain.InstanceObservation) []domain.InstanceObservation {
+	if resource == nil || len(instances) == 0 {
+		return instances
+	}
+	out := make([]domain.InstanceObservation, 0, len(instances))
+	for _, instance := range instances {
+		if instanceDisabled(resource.Spec.PgBouncer, instance.Name) {
+			continue
+		}
+		out = append(out, instance)
+	}
+	return out
+}
+
+func instanceDisabled(spec v1alpha1.PgBouncerSpec, instanceName string) bool {
+	for _, override := range spec.InstanceOverrides {
+		if override.Name == instanceName && override.Enabled != nil && !*override.Enabled {
+			return true
+		}
+	}
+	return false
 }
 
 func (m ProbeMonitor) jobTimeout(resource *v1alpha1.PgBouncerAurora, instanceCount int) time.Duration {

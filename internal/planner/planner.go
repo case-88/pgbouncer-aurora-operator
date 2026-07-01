@@ -55,6 +55,13 @@ func Plan(input Input) Output {
 			Reason:              "monitor unknown",
 			Replicas:            replicasFor(input.Resource.Spec.PgBouncer, observed.Name),
 		}
+		if instanceDisabled(input.Resource.Spec.PgBouncer, observed.Name) {
+			plan.Disabled = true
+			plan.Replicas = 0
+			plan.Reason = "disabled by spec.pgbouncer.instanceOverrides"
+			out.Instances = append(out.Instances, plan)
+			continue
+		}
 		if input.CachedHealth {
 			plan = applyCachedHealth(plan, previousStatus)
 		} else if health, ok := input.Health[observed.Name]; ok {
@@ -106,6 +113,7 @@ func instancePlansFromStatus(items []v1alpha1.InstanceStatus) []domain.InstanceP
 				DbiResourceId:    item.DbiResourceId,
 			},
 			Healthy:              item.Healthy,
+			Disabled:             item.Disabled,
 			Reason:               item.Reason,
 			Replicas:             item.DesiredReplicas,
 			ReadyReplicas:        item.ReadyReplicas,
@@ -294,6 +302,15 @@ func replicasFor(spec v1alpha1.PgBouncerSpec, instanceName string) int32 {
 		}
 	}
 	return replicas
+}
+
+func instanceDisabled(spec v1alpha1.PgBouncerSpec, instanceName string) bool {
+	for _, override := range spec.InstanceOverrides {
+		if override.Name == instanceName && override.Enabled != nil && !*override.Enabled {
+			return true
+		}
+	}
+	return false
 }
 
 func defaultInt32(value int32, fallback int32) int32 {
