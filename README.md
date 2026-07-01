@@ -6,13 +6,13 @@
 [![Go Report](https://goreportcard.com/badge/github.com/case-88/pgbouncer-aurora-operator)](https://goreportcard.com/report/github.com/case-88/pgbouncer-aurora-operator)
 [![Image](https://img.shields.io/badge/image-quay.io%2Fcase--88%2Fpgbouncer--aurora--operator-blue)](https://quay.io/repository/case-88/pgbouncer-aurora-operator)
 
-`pgbouncer-aurora-operator` watches Aurora PostgreSQL topology, runs one PgBouncer per DB instance (1:1), and keeps the fixed Writer/Reader Kubernetes Services that applications point at aligned with the current Aurora roles. Its core value is eliminating the Reader connection skew that PgBouncer pooling introduces, and automatically reflecting topology changes such as instance scaling and failover into the connection layer.
+`pgbouncer-aurora-operator` watches Aurora PostgreSQL topology and runs one PgBouncer per DB instance (1:1). Applications can connect through fixed Writer/Reader Kubernetes Services, or through per-instance Services as a host-list, while the operator keeps Service membership aligned with the current Aurora roles. Its goal is to reduce the Reader connection skew that PgBouncer pooling introduces and to reflect topology changes such as instance scaling and failover into the connection layer automatically.
 
 > Status: public alpha — `v0.1.0-alpha.1` (CRD API `v1alpha1`). A multi-arch image (`linux/amd64`, `linux/arm64`) is published on Quay and raw Kubernetes manifests ship under `deploy/`. APIs and manifests may still change before a stable release; a Helm chart is not available yet.
 
 ## Why it exists
 
-A typical "PgBouncer in front of Aurora" setup has two limitations.
+A typical "PgBouncer in front of Aurora" setup has the following limitations.
 
 1. **The Aurora Reader endpoint cannot spread a connection pool.** The Reader endpoint only picks an instance at connection time (DNS resolution). A long-lived pool connection, once established, is pinned to that instance — so in a pooled environment load skews onto one particular Reader (Reader connection skew).
 
@@ -20,7 +20,7 @@ A typical "PgBouncer in front of Aurora" setup has two limitations.
 
 3. **The Aurora cluster endpoint is strongly affected by DNS cache, TTL, and refresh behavior.** After failover, even if the cluster endpoint points at the new Writer, stale endpoint/IP data can remain in use longer depending on DNS settings.
 
-This operator watches Aurora topology, updates per-instance Writer/Reader Kubernetes Service membership through operator-managed Pod labels, and connects each PgBouncer directly to a single Aurora instance (1:1). This fills these gaps — per-instance PgBouncer Pods spread Reader load instead of concentrating it on one endpoint, and new instances are automatically joined to the Service of their role.
+This operator watches Aurora topology, updates Writer/Reader Kubernetes Service membership per instance through operator-managed Pod labels, and connects each PgBouncer directly to a single Aurora instance (1:1). With this structure, Reader load is spread across per-instance PgBouncer Pods instead of being pinned to one endpoint, and new instances are joined to the Service for their current role after they are ready.
 
 ## What it does
 
@@ -70,7 +70,7 @@ flowchart LR
   - If the Writer cluster endpoint is briefly unavailable during failover, it immediately retries with the Reader cluster endpoint built in the same discovery tick.
   - Determines role from `session_id` (`MASTER_SESSION_ID` = Writer).
   - Instance endpoints are generated deterministically as `{instanceName}.{domainName}`.
-  - RDS metadata is used only to enrich the AZ for zone-aware scheduling and `DbiResourceId` (physical instance identity); it is not used as the topology source of truth or as a membership-removal trigger.
+  - RDS metadata is used only for AZ data needed by zone-aware placement and `DbiResourceId` (physical instance identity) enrichment/debugging. It is not used as the topology decision source or as a Service membership-removal trigger.
   - RDS API failures or timeouts do not affect normal Discovery. RDS metadata is currently referenced only for zone-aware placement and physical identity enrichment/debugging.
 
 - **Rendering**
@@ -83,20 +83,20 @@ flowchart LR
   - Checks PgBouncer Pod readiness first.
   - Always connects directly to the backend DB and checks role/health via `pg_is_in_recovery()` and `transaction_read_only`.
   - Applies failure/recovery thresholds before changing healthy Service membership.
-  - During Writer failover, Discovery is the source of truth for role, and Monitor is treated as a sanity check rather than the primary gate.
+  - During Writer failover, Discovery is the role decision source. Monitor is treated as a sanity check rather than the primary gate.
 
 - **Topology handling**
   - New Aurora instances get new PgBouncer resources.
   - Removed Aurora instances are first dropped from the role Services, and after retention the per-instance resources are deleted.
   - Zone-aware scheduling can prefer (Preferred) or require (Required) the same AZ as the Aurora instance.
 
-## Scope and configuration (must read)
+## Limitations and operating assumptions
 
-The value of this operator is "automatic topology reflection." Its responsibility boundary is stated clearly here.
+This operator's job is to detect topology and update connection paths. Its responsibility boundary is stated clearly here.
 
 ### Not a high-availability (HA) proxy
 
-PgBouncer is a lightweight, high-performance **connection pooler**, not an HA proxy, and this operator does not change that nature. What the operator does is keep the pooling layer always pointed at the instances with the correct roles.
+PgBouncer is a lightweight, high-performance **connection pooler**, not an HA proxy, and this operator does not change that nature. The HA scope this operator covers is keeping the pooling layer pointed at the instances with the correct roles and providing options to clean up stale connections when the Writer changes.
 
 - **The nature of Aurora failover**: at promotion, connections to the old Writer are dropped, and any in-flight transactions at that moment fail 100%. This is inherent to Aurora failover regardless of what proxy sits in front.
 - **Recommended Writer change cleanup**: `writerChangeConnectionHandling: RestartWriters` is recommended for production. Driver role checks such as `targetServerType` and `target_session_attrs` select a suitable host when a new connection is opened; they do not continuously monitor the role of an already-open connection. Restarting the old/new Writer PgBouncer Deployments drops stale app→PgBouncer and PgBouncer→Aurora connections and forces the application/pool to reconnect through the current Writer path.
@@ -316,7 +316,7 @@ Endpoint generation rules:
 - Reader endpoint: `{clusterName}.cluster-ro-{domainName}`
 - Instance endpoint: `{dbInstanceIdentifier}.{domainName}`
 
-`spec.discovery.interval` defaults to `3s` to follow Aurora failover quickly. This only raises the Aurora topology query frequency. AWS RDS metadata calls for the auxiliary AZ/`DbiResourceId` data are refreshed by the operator-level shared metadata worker. RDS API failures or timeouts do not affect normal Discovery. RDS metadata is currently referenced only for zone-aware placement and physical identity enrichment/debugging, not for traffic membership removal.
+`spec.discovery.interval` defaults to `3s` to follow Aurora failover quickly. This only raises the Aurora topology query frequency. AWS RDS metadata calls for auxiliary AZ/`DbiResourceId` data are refreshed by the operator process's shared metadata worker. RDS API failures or timeouts do not affect normal Discovery. RDS metadata is currently referenced only for zone-aware placement and physical identity enrichment/debugging, not for traffic membership removal.
 
 The operator does not infer the AWS region from `spec.discovery.domainName`. RDS metadata lookups use the operator process flag `--aws-region`, so this region must match the region of the Aurora cluster that `domainName` points at. For multi-region operation, run a separate operator deployment per region.
 
@@ -372,7 +372,7 @@ or probe wiring beyond the fields above are not part of the v1alpha1 API.
 
 | Option | Required | Default | Description |
 |---|---:|---|---|
-| `spec.pgbouncer.config.pgbouncer` | No | `{auth_type: md5, auth_file: /etc/pgbouncer/userlist.txt, listen_addr: 0.0.0.0, listen_port: 6432}` | Rendered as `[pgbouncer]`. `listen_port` is the source of truth for the container port, Services, and probes. `listen_addr`, `auth_file`, and `pidfile` can also be set here. |
+| `spec.pgbouncer.config.pgbouncer` | No | `{auth_type: md5, auth_file: /etc/pgbouncer/userlist.txt, listen_addr: 0.0.0.0, listen_port: 6432}` | Rendered as `[pgbouncer]`. `listen_port` is the canonical value used by the container port, Services, and probes. `listen_addr`, `auth_file`, and `pidfile` can also be set here. |
 | `spec.pgbouncer.config.databases` | No | `{"*": {}}` | Rendered as `[databases]`. Each key is a database entry name. `host`/`port` are operator-managed per Aurora instance and ignored if provided. |
 | `spec.pgbouncer.config.users` | No | `{}` | Rendered as `[users]`. |
 | `spec.pgbouncer.config.peers` | No | `{}` | Rendered as `[peers]`. |
@@ -449,15 +449,15 @@ The PgBouncer auth file Secret referenced by `spec.pgbouncer.authFileSecretRef`:
 The operator is a Deployment that watches a single namespace; the default manifest uses `replicas: 1` and enables leader election. The default manifest is [`deploy/operator.yaml`](deploy/operator.yaml), and the watch target is set by `--watch-namespace` (defaults to the operator Pod's namespace) and `--watch-names` (defaults to `*`, all CRs in that namespace).
 
 > [!IMPORTANT]
-> **Recommended deployment unit — up to 50 CRs per operator**
+> **Recommended operator deployment**
 >
-> Treat one operator managing roughly 50 CRs and 100 backend instances as the default production-scale deployment unit. Discovery and monitor jobs are bounded by their own intervals, per-probe timeouts, and per-CR single-flight execution rather than low global worker or DB-probe QPS limits. You can narrow an operator to specific CRs with `--watch-names`.
+> Internal testing confirmed that one operator can manage up to 50 CRs (=Aurora clusters) and 100 backend instances smoothly. It uses up to 10 workers per CR (`WORKERS_PER_CR`), and core work such as Discovery, Monitor, and Reconcile was processed without issue.
 
 #### Operator flags
 
 These are manager process flags, not CR options.
 
-Only the public operational flags are listed below. Scheduler discovery/monitor execution is per-CR single-flight and does not use user-tuned global worker pools. DB probe throughput is controlled by monitor intervals, per-probe timeout, and `--workers-per-cr`; the AWS API limiter remains intentionally low as a defensive circuit breaker against accidental hot-loop bugs.
+Only the public operational flags are listed below. Discovery/Monitor execution is controlled by per-CR single-flight scheduling and does not expose a global worker pool for user tuning. DB probe throughput is controlled by monitor intervals, per-probe timeout, and `--workers-per-cr`. The AWS API limiter remains intentionally low as a last-resort guard against accidental hot-loop bugs in the shared metadata worker.
 
 | Flag | Default | Unit | Description |
 |---|---|---|---|
@@ -468,7 +468,7 @@ Only the public operational flags are listed below. Scheduler discovery/monitor 
 | `--rds-metadata-refresh-interval` | `RDS_METADATA_REFRESH_INTERVAL` or `1m` | Go duration | Shared RDS metadata refresh interval for AZ/`DbiResourceId` enrichment. Values below `10s` are clamped to `10s`. |
 | `--aws-api-qps` | `AWS_API_QPS` or `1` | requests/sec | Defensive AWS API limiter for the shared metadata worker. Normal load is already bounded by cluster de-duplication and the refresh interval. |
 | `--aws-api-burst` | `AWS_API_BURST` or `1` | requests | Defensive AWS API limiter burst. |
-| `--workers-per-cr` | `WORKERS_PER_CR` or `4` | count | Maximum concurrent backend monitor probes within one CR. The monitor creates only the workers needed for the current backend count, so 1-2 instance clusters do not keep four idle workers. |
+| `--workers-per-cr` | `WORKERS_PER_CR` or `10` | count | Maximum concurrent backend monitor probes within one CR. The monitor creates only as many worker goroutines as the current backend count requires. |
 | `--max-concurrent-reconciles` | `64` | count | Maximum concurrent reconciles across different CRs. controller-runtime still serializes the same workqueue key, so this raises cross-CR throughput without allowing concurrent reconciles for the same CR. |
 | `--watch-namespace` | `WATCH_NAMESPACE` | namespace | Namespace the manager watches. Required. Cluster-wide watch is not supported. The default manifest uses the operator Pod namespace. |
 | `--watch-names` | `WATCH_NAMES` | CR names | Optional `PgBouncerAurora` name filter. Empty/`*` watches all CRs in `--watch-namespace`; `a,b,c` or repeated `--watch-names=a --watch-names=b` watches only those CRs. |
@@ -529,7 +529,7 @@ What it shows:
 
 If an Aurora instance and the PgBouncer Pod that serves it are in different AZs, you incur cross-AZ latency and data transfer cost. Zone-aware placement reduces this by putting each PgBouncer Pod on a node in the same AZ as its Aurora instance. It is enabled by default and controlled by `spec.topologyPolicy.zoneAware`.
 
-- **AZ source** — `aurora_replica_status()` has no AZ, so only when zone-aware is on does the operator enrich each instance's AZ via RDS `DescribeDBClusters`/`DescribeDBInstances`. This metadata is only a placement hint, not the topology source of truth, and a lookup failure does not block instance add/remove itself.
+- **AZ source** — `aurora_replica_status()` has no AZ, so only when zone-aware is on does the operator enrich each instance's AZ via RDS `DescribeDBClusters`/`DescribeDBInstances`. This metadata is only a placement hint and physical identity enrichment/debugging data, not the topology decision source or Service membership-removal trigger. A lookup failure does not block instance add/remove itself.
 - **Enforcement** — `Preferred` (default) generates `preferredDuringSchedulingIgnoredDuringExecution` nodeAffinity, while `Required` generates `requiredDuringSchedulingIgnoredDuringExecution` nodeAffinity. The default is Preferred so that the Pod still schedules and avoids a DB-connection outage even when no same-AZ node exists. Use `Required` when strongly steering node creation in a specific AZ via Karpenter or similar, but be aware the Pod may stay Pending if the NodePool/subnet/AZ constraints do not align.
 - **Relationship with user scheduling constraints** — zone-aware is additive to existing settings and does not replace user-specified `nodeSelector`, `affinity`, or `topologySpreadConstraints`. The operator detects common cases that may conflict with the zone-aware intent — a strict `nodeSelector`, a required `nodeAffinity`, or zone pinning + topology spread on the same key — and handles them per `conflictPolicy` (`Warn`/`Fail`/`Ignore`). It cannot prove every scheduler outcome, so also monitor the Kubernetes scheduling state.
 - **Replica spreading** — to spread the PgBouncer replicas of the same Aurora instance across nodes, use the native `spec.pgbouncer.topologySpreadConstraints` (there is no operator-specific `replicaSpread` option). The roles are split: zone nodeAffinity handles AZ alignment, and topologySpreadConstraints handles replica spreading.
@@ -549,7 +549,7 @@ Aurora Writer/Reader role change
 → Application reconnect / pool recycle
 ```
 
-> These numbers are the **convergence speed** of Service membership, not a zero-downtime guarantee for already-established connections or in-flight transactions. Connection/transaction recovery is the application responsibility described in the [Scope and configuration](#scope-and-configuration-must-read) section above.
+> These numbers are the **convergence speed** of Service membership, not a zero-downtime guarantee for already-established connections or in-flight transactions. Connection/transaction recovery is the application responsibility described in the [Limitations and operating assumptions](#limitations-and-operating-assumptions) section above.
 
 In testing, the operator-managed Kubernetes Service generally converged faster, on a fresh-connection basis (each measurement opens a new connection instead of reusing an existing pooled connection), than waiting directly on the Aurora cluster endpoint, while an NLB-backed Service added target propagation time. This is expected — the internal Service path is updated via Kubernetes EndpointSlice, whereas an external NLB also depends on target health-check and deregistration behavior.
 
@@ -589,7 +589,7 @@ Beyond failover, common operational topology-change cases were measured.
 | Reader deletion | Exclude the deleted Reader from the Reader Service, and clean up per-instance resources per the retention policy | Excluded from the Reader Service immediately once the discovery/missing-count policy is reflected | Excluded right after deletion detection, apply \~80ms |
 | All Readers removed | Temporarily join the Writer via `readerEmptyFallback` so the Reader Service is not empty | Once usable Readers reach 0, the Reader Service is temporarily corrected to the Writer instance | While Reader candidates are 0, the Reader Service is not emptied and points at the fallback Writer. Once a real Reader is ready, the fallback Writer is removed |
 
-In these measurements too, the topology source of truth is `aurora_replica_status()`, and RDS metadata is an optional layer for AZ/`DbiResourceId` enrichment and debugging. A metadata refresh failure does not make discovery untrusted, and ordinary add/remove proceeds via the discovery/monitor policy rather than RDS instance status.
+In these measurements too, the topology decision source is `aurora_replica_status()`, and RDS metadata is an optional layer for AZ/`DbiResourceId` enrichment and debugging. A metadata refresh failure does not make discovery untrusted, and ordinary add/remove proceeds via the discovery/monitor policy rather than RDS instance status.
 
 ## Reader Service load balancing
 

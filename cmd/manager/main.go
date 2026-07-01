@@ -40,7 +40,7 @@ const (
 	defaultMaxConcurrentReconciles = 64
 	defaultAWSAPIQPS               = 1
 	defaultAWSAPIBurst             = 1
-	defaultWorkersPerCR            = 4
+	defaultWorkersPerCR            = 10
 	defaultRDSMetadataRefresh      = time.Minute
 	minRDSMetadataCacheTTL         = 5 * time.Minute
 	minRDSMetadataRefresh          = 10 * time.Second
@@ -84,7 +84,7 @@ func main() {
 	flag.Float64Var(&awsAPIQPS, "aws-api-qps", 0, "Defensive AWS API rate limit QPS. Defaults to AWS_API_QPS or 1.")
 	flag.IntVar(&awsAPIBurst, "aws-api-burst", 0, "Defensive AWS API rate limit burst. Defaults to AWS_API_BURST or 1.")
 	flag.DurationVar(&schedulerTick, "scheduler-tick", 0, "Discovery/monitor scheduler tick. Defaults to SCHEDULER_TICK or 1s.")
-	flag.IntVar(&workersPerCR, "workers-per-cr", 0, "Maximum concurrent backend monitor probes per PgBouncerAurora CR. Defaults to WORKERS_PER_CR or 4.")
+	flag.IntVar(&workersPerCR, "workers-per-cr", 0, "Maximum concurrent backend monitor probes per PgBouncerAurora CR. Defaults to WORKERS_PER_CR or 10.")
 	flag.DurationVar(&statusRefreshMinInterval, "status-refresh-min-interval", 0, "Minimum interval for refreshing the cached /status snapshot. Defaults to STATUS_REFRESH_MIN_INTERVAL or 5s.")
 	flag.DurationVar(&statusRecentWindow, "status-recent-window", 0, "Window for highlighting recently changed /status items. Defaults to STATUS_RECENT_WINDOW or 1m; clamped to 1m..24h.")
 	flag.BoolVar(&zapDevel, "zap-devel", false, "Enable development-mode logging.")
