@@ -946,9 +946,7 @@ func (r *PgBouncerAuroraReconciler) podMembershipLabelDrifted(ctx context.Contex
 		if instanceName == "" {
 			continue
 		}
-		if pod.Labels[render.LabelWriter] != boolLabel(writer[instanceName]) ||
-			pod.Labels[render.LabelReader] != boolLabel(reader[instanceName]) ||
-			pod.Labels[render.LabelRole] != string(roles[instanceName]) {
+		if !membershipLabelsExact(pod.Labels, writer[instanceName], reader[instanceName], roles[instanceName]) {
 			return true, nil
 		}
 	}
@@ -1382,26 +1380,26 @@ func (r *PgBouncerAuroraReconciler) authFileHash(ctx context.Context, resource *
 	if err := r.Get(ctx, types.NamespacedName{Name: secretName, Namespace: resource.Namespace}, secret); err != nil {
 		return ""
 	}
-	return secretDataHash(secret.Data)
+	return authFileMetadataHash(secret)
 }
 
-func secretDataHash(data map[string][]byte) string {
-	if len(data) == 0 {
+type authFileMetadataHashPayload struct {
+	Namespace       string `json:"namespace,omitempty"`
+	Name            string `json:"name,omitempty"`
+	UID             string `json:"uid,omitempty"`
+	ResourceVersion string `json:"resourceVersion,omitempty"`
+}
+
+func authFileMetadataHash(secret *corev1.Secret) string {
+	if secret == nil || secret.Name == "" {
 		return ""
 	}
-	keys := make([]string, 0, len(data))
-	for key := range data {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-	h := sha256.New()
-	for _, key := range keys {
-		h.Write([]byte(key))
-		h.Write([]byte{0})
-		h.Write(data[key])
-		h.Write([]byte{0})
-	}
-	return hex.EncodeToString(h.Sum(nil))
+	return hashObject(authFileMetadataHashPayload{
+		Namespace:       secret.Namespace,
+		Name:            secret.Name,
+		UID:             string(secret.UID),
+		ResourceVersion: secret.ResourceVersion,
+	})
 }
 
 func (r *PgBouncerAuroraReconciler) cleanupRemovedInstanceResources(
@@ -1756,38 +1754,18 @@ func (r *PgBouncerAuroraReconciler) patchPodMembership(ctx context.Context, reso
 	writer := stringSet(plan.Membership.Writer)
 	reader := stringSet(plan.Membership.Reader)
 	roles := instanceRoleSet(activePlanInstances(plan.Instances))
+	livePods := make([]corev1.Pod, 0, len(pods.Items))
 	for i := range pods.Items {
 		updated, err := r.patchPodMembershipAdditions(ctx, &pods.Items[i], writer, reader, roles)
 		if err != nil {
 			return err
 		}
 		if updated != nil {
-			pods.Items[i] = *updated
+			livePods = append(livePods, *updated)
 		}
 	}
-	for i := range pods.Items {
-		pod := &pods.Items[i]
-		instanceName := pod.Labels[render.LabelInstance]
-		desiredWriter := writer[instanceName]
-		desiredReader := reader[instanceName]
-		desiredRole := roles[instanceName]
-		if pod.Labels[render.LabelWriter] == boolLabel(desiredWriter) &&
-			pod.Labels[render.LabelReader] == boolLabel(desiredReader) &&
-			pod.Labels[render.LabelRole] == string(desiredRole) {
-			continue
-		}
-		patched := pod.DeepCopy()
-		if patched.Labels == nil {
-			patched.Labels = map[string]string{}
-		}
-		setBoolLabel(patched.Labels, render.LabelWriter, desiredWriter)
-		setBoolLabel(patched.Labels, render.LabelReader, desiredReader)
-		if desiredRole != "" {
-			patched.Labels[render.LabelRole] = string(desiredRole)
-		} else {
-			delete(patched.Labels, render.LabelRole)
-		}
-		if err := r.Patch(ctx, patched, client.MergeFrom(pod)); err != nil {
+	for i := range livePods {
+		if err := r.patchPodMembershipExact(ctx, &livePods[i], writer, reader, roles); err != nil {
 			return err
 		}
 	}
@@ -1801,32 +1779,105 @@ func (r *PgBouncerAuroraReconciler) patchPodMembershipAdditions(
 	reader map[string]bool,
 	roles map[string]v1alpha1.Role,
 ) (*corev1.Pod, error) {
-	instanceName := pod.Labels[render.LabelInstance]
-	desiredWriter := writer[instanceName]
-	desiredReader := reader[instanceName]
-	desiredRole := roles[instanceName]
-	if (!desiredWriter || pod.Labels[render.LabelWriter] == "true") &&
-		(!desiredReader || pod.Labels[render.LabelReader] == "true") &&
-		(desiredRole == "" || pod.Labels[render.LabelRole] == string(desiredRole)) {
-		return nil, nil
+	var updated *corev1.Pod
+	key := types.NamespacedName{Name: pod.Name, Namespace: pod.Namespace}
+	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		current := &corev1.Pod{}
+		if err := r.Get(ctx, key, current); err != nil {
+			if apierrors.IsNotFound(err) {
+				updated = nil
+				return nil
+			}
+			return err
+		}
+		instanceName := current.Labels[render.LabelInstance]
+		desiredWriter := writer[instanceName]
+		desiredReader := reader[instanceName]
+		desiredRole := roles[instanceName]
+		if (!desiredWriter || current.Labels[render.LabelWriter] == "true") &&
+			(!desiredReader || current.Labels[render.LabelReader] == "true") &&
+			(desiredRole == "" || current.Labels[render.LabelRole] == string(desiredRole)) {
+			updated = current
+			return nil
+		}
+		patched := current.DeepCopy()
+		if patched.Labels == nil {
+			patched.Labels = map[string]string{}
+		}
+		if desiredWriter {
+			patched.Labels[render.LabelWriter] = "true"
+		}
+		if desiredReader {
+			patched.Labels[render.LabelReader] = "true"
+		}
+		if desiredRole != "" {
+			patched.Labels[render.LabelRole] = string(desiredRole)
+		}
+		if err := r.Patch(ctx, patched, client.MergeFrom(current)); err != nil {
+			updated = nil
+			return client.IgnoreNotFound(err)
+		}
+		updated = patched
+		return nil
+	})
+	return updated, err
+}
+
+func (r *PgBouncerAuroraReconciler) patchPodMembershipExact(
+	ctx context.Context,
+	pod *corev1.Pod,
+	writer map[string]bool,
+	reader map[string]bool,
+	roles map[string]v1alpha1.Role,
+) error {
+	key := types.NamespacedName{Name: pod.Name, Namespace: pod.Namespace}
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		current := &corev1.Pod{}
+		if err := r.Get(ctx, key, current); err != nil {
+			return client.IgnoreNotFound(err)
+		}
+		instanceName := current.Labels[render.LabelInstance]
+		desiredWriter := writer[instanceName]
+		desiredReader := reader[instanceName]
+		desiredRole := roles[instanceName]
+		if membershipLabelsExact(current.Labels, desiredWriter, desiredReader, desiredRole) {
+			return nil
+		}
+		patched := current.DeepCopy()
+		if patched.Labels == nil {
+			patched.Labels = map[string]string{}
+		}
+		setBoolLabel(patched.Labels, render.LabelWriter, desiredWriter)
+		setBoolLabel(patched.Labels, render.LabelReader, desiredReader)
+		if desiredRole != "" {
+			patched.Labels[render.LabelRole] = string(desiredRole)
+		} else {
+			delete(patched.Labels, render.LabelRole)
+		}
+		return client.IgnoreNotFound(r.Patch(ctx, patched, client.MergeFrom(current)))
+	})
+}
+
+func membershipLabelsExact(labels map[string]string, desiredWriter bool, desiredReader bool, desiredRole v1alpha1.Role) bool {
+	return boolMembershipLabelExact(labels, render.LabelWriter, desiredWriter) &&
+		boolMembershipLabelExact(labels, render.LabelReader, desiredReader) &&
+		roleMembershipLabelExact(labels, desiredRole)
+}
+
+func boolMembershipLabelExact(labels map[string]string, key string, desired bool) bool {
+	value, exists := labels[key]
+	if desired {
+		return exists && value == "true"
 	}
-	patched := pod.DeepCopy()
-	if patched.Labels == nil {
-		patched.Labels = map[string]string{}
+	return !exists
+}
+
+func roleMembershipLabelExact(labels map[string]string, desired v1alpha1.Role) bool {
+	value, exists := labels[render.LabelRole]
+	if desired != "" {
+		return exists && value == string(desired)
 	}
-	if desiredWriter {
-		patched.Labels[render.LabelWriter] = "true"
-	}
-	if desiredReader {
-		patched.Labels[render.LabelReader] = "true"
-	}
-	if desiredRole != "" {
-		patched.Labels[render.LabelRole] = string(desiredRole)
-	}
-	if err := r.Patch(ctx, patched, client.MergeFrom(pod)); err != nil {
-		return nil, err
-	}
-	return patched, nil
+	return !exists
 }
 
 func instanceRoleSet(instances []domain.InstancePlan) map[string]v1alpha1.Role {

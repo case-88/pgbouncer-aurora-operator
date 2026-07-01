@@ -269,9 +269,9 @@ func TestInstanceDeploymentAuthFileHashUsesInputWhenProvided(t *testing.T) {
 	owner.Spec.PgBouncer.AuthFileSecretRef.Name = "pgbouncer-userlist"
 	instance := domain.InstancePlan{InstanceObservation: domain.InstanceObservation{Name: "db-1"}, Replicas: 1}
 
-	first := InstanceDeployment(InstanceRenderInput{Owner: owner, Instance: instance, AuthFileHash: "secret-content-hash"})
+	first := InstanceDeployment(InstanceRenderInput{Owner: owner, Instance: instance, AuthFileHash: "secret-metadata-token"})
 	firstHash := first.Spec.Template.Annotations[AnnotationAuthFileHash]
-	if firstHash != "secret-content-hash" || first.ObjectMeta.Annotations[AnnotationAuthFileHash] != firstHash {
+	if firstHash != "secret-metadata-token" || first.Annotations[AnnotationAuthFileHash] != firstHash {
 		t.Fatalf("auth ref hash annotation missing: object=%#v template=%#v", first.ObjectMeta.Annotations, first.Spec.Template.Annotations)
 	}
 }

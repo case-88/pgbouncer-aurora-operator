@@ -473,6 +473,7 @@ Only the public operational flags are listed below. Discovery/Monitor execution 
 | `--watch-namespace` | `WATCH_NAMESPACE` | namespace | Namespace the manager watches. Required. Cluster-wide watch is not supported. The default manifest uses the operator Pod namespace. |
 | `--watch-names` | `WATCH_NAMES` | CR names | Optional `PgBouncerAurora` name filter. Empty/`*` watches all CRs in `--watch-namespace`; `a,b,c` or repeated `--watch-names=a --watch-names=b` watches only those CRs. |
 | `--reconcile-min-interval` | `RECONCILE_MIN_INTERVAL` or `1s` | Go duration | Minimum interval between heavy reconciles for the same CR. This is a per-CR guard, not a global reconcile throttle. |
+| `--k8s-api-timeout` | `K8S_API_TIMEOUT` or `10s` | Go duration | Timeout for each Kubernetes API request made by the operator. |
 | `--status-refresh-min-interval` | `STATUS_REFRESH_MIN_INTERVAL` or `5s` | Go duration | Minimum refresh interval for the cached snapshot the `/status` dashboard shows. |
 | `--status-recent-window` | `STATUS_RECENT_WINDOW` or `1m` | Go duration | Time window used to highlight recently changed `/status` items. Values are clamped to `1m`–`24h`. |
 | `--zap-devel` | `false` | boolean | Enable development-mode logging. |
