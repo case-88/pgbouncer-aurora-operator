@@ -267,13 +267,18 @@ func TestReconcileSkipsApplyWhenChecksDueButDesiredStateUnchanged(t *testing.T) 
 	}
 }
 
-func TestReconcileRollsDeploymentOnAuthFileSecretContentChange(t *testing.T) {
+func TestReconcileRollsDeploymentOnAuthFileSecretResourceVersionChange(t *testing.T) {
 	ctx := context.Background()
 	scheme := testScheme(t)
 	resource := sampleResource()
 	secret := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{Name: resource.Spec.PgBouncer.AuthFileSecretRef.Name, Namespace: resource.Namespace},
-		Data:       map[string][]byte{"userlist.txt": []byte(`"svc" "md5-old"`)},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:            resource.Spec.PgBouncer.AuthFileSecretRef.Name,
+			Namespace:       resource.Namespace,
+			UID:             types.UID("secret-uid"),
+			ResourceVersion: "1",
+		},
+		Data: map[string][]byte{"userlist.txt": []byte(`"svc" "md5-old"`)},
 	}
 	client := fake.NewClientBuilder().
 		WithScheme(scheme).
@@ -292,8 +297,8 @@ func TestReconcileRollsDeploymentOnAuthFileSecretContentChange(t *testing.T) {
 	}
 	deployment := assertExists[*appsv1.Deployment](t, ctx, client, "sample-db-1")
 	firstHash := deployment.Spec.Template.Annotations[render.AnnotationAuthFileHash]
-	if firstHash != secretDataHash(secret.Data) {
-		t.Fatalf("auth hash mismatch: got=%q want=%q", firstHash, secretDataHash(secret.Data))
+	if firstHash != authFileMetadataHash(secret) {
+		t.Fatalf("auth hash mismatch: got=%q want=%q", firstHash, authFileMetadataHash(secret))
 	}
 
 	secret.Data["userlist.txt"] = []byte(`"svc" "md5-new"`)
@@ -564,6 +569,53 @@ func TestPatchPodMembershipAddsBeforeRemoving(t *testing.T) {
 	}
 	if len(patchOrder) != 2 || patchOrder[0] != "add-new" || patchOrder[1] != "remove-old" {
 		t.Fatalf("membership patch order = %#v", patchOrder)
+	}
+}
+
+func TestPatchPodMembershipRetriesConflict(t *testing.T) {
+	ctx := context.Background()
+	scheme := testScheme(t)
+	resource := sampleResource()
+	pod := readyManagedPod(resource, "reader", "db-1")
+	pod.Labels[render.LabelReader] = "true"
+	patchCount := 0
+	client := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(resource, pod).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Patch: func(ctx context.Context, c client.WithWatch, obj client.Object, patch client.Patch, opts ...client.PatchOption) error {
+				patchCount++
+				if patchCount == 1 {
+					return apierrors.NewConflict(
+						schema.GroupResource{Resource: "pods"},
+						obj.GetName(),
+						errors.New("pod conflict"),
+					)
+				}
+				return c.Patch(ctx, obj, patch, opts...)
+			},
+		}).
+		Build()
+	reconciler := &PgBouncerAuroraReconciler{Client: client, Scheme: scheme}
+	plan := planner.Output{
+		Instances: []domain.InstancePlan{{
+			InstanceObservation: domain.InstanceObservation{Name: "db-1", Role: v1alpha1.RoleWriter},
+		}},
+		Membership: domain.ServiceMembership{Writer: []string{"db-1"}},
+	}
+
+	if err := reconciler.patchPodMembership(ctx, resource, plan); err != nil {
+		t.Fatal(err)
+	}
+	if patchCount != 3 {
+		t.Fatalf("patch count = %d", patchCount)
+	}
+	updated := &corev1.Pod{}
+	if err := client.Get(ctx, types.NamespacedName{Name: pod.Name, Namespace: pod.Namespace}, updated); err != nil {
+		t.Fatal(err)
+	}
+	if updated.Labels[render.LabelWriter] != "true" || updated.Labels[render.LabelReader] != "" {
+		t.Fatalf("membership labels not reconciled: %#v", updated.Labels)
 	}
 }
 
@@ -1306,13 +1358,18 @@ func TestMaxConcurrentReconcilesDefaultAndOverride(t *testing.T) {
 	}
 }
 
-func TestApplyDesiredRollsDeploymentOnAuthFileSecretContentChange(t *testing.T) {
+func TestApplyDesiredRollsDeploymentOnAuthFileSecretResourceVersionChange(t *testing.T) {
 	ctx := context.Background()
 	scheme := testScheme(t)
 	resource := sampleResource()
 	secret := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{Name: resource.Spec.PgBouncer.AuthFileSecretRef.Name, Namespace: resource.Namespace},
-		Data:       map[string][]byte{"userlist.txt": []byte(`"svc" "md5-old"`)},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:            resource.Spec.PgBouncer.AuthFileSecretRef.Name,
+			Namespace:       resource.Namespace,
+			UID:             types.UID("secret-uid"),
+			ResourceVersion: "1",
+		},
+		Data: map[string][]byte{"userlist.txt": []byte(`"svc" "md5-old"`)},
 	}
 	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(resource, secret).Build()
 	reconciler := &PgBouncerAuroraReconciler{Client: c, Scheme: scheme}
@@ -1326,8 +1383,8 @@ func TestApplyDesiredRollsDeploymentOnAuthFileSecretContentChange(t *testing.T) 
 	}
 	deployment := assertExists[*appsv1.Deployment](t, ctx, c, "sample-db-1")
 	firstHash := deployment.Spec.Template.Annotations[render.AnnotationAuthFileHash]
-	if firstHash == "" || firstHash != secretDataHash(secret.Data) {
-		t.Fatalf("auth file hash mismatch: got=%q want=%q", firstHash, secretDataHash(secret.Data))
+	if firstHash == "" || firstHash != authFileMetadataHash(secret) {
+		t.Fatalf("auth file hash mismatch: got=%q want=%q", firstHash, authFileMetadataHash(secret))
 	}
 
 	secret.Data["userlist.txt"] = []byte(`"svc" "md5-new"`)
@@ -1339,7 +1396,7 @@ func TestApplyDesiredRollsDeploymentOnAuthFileSecretContentChange(t *testing.T) 
 	}
 	deployment = assertExists[*appsv1.Deployment](t, ctx, c, "sample-db-1")
 	if deployment.Spec.Template.Annotations[render.AnnotationAuthFileHash] == firstHash {
-		t.Fatalf("auth file hash should change when secret content changes: %s", firstHash)
+		t.Fatalf("auth file hash should change when secret resourceVersion changes: %s", firstHash)
 	}
 }
 

@@ -44,6 +44,7 @@ spec:
             - --workers-per-cr=$(WORKERS_PER_CR)
             - --max-concurrent-reconciles=$(MAX_CONCURRENT_RECONCILES)
             - --reconcile-min-interval=$(RECONCILE_MIN_INTERVAL)
+            - --k8s-api-timeout=$(K8S_API_TIMEOUT)
           env:
             - name: WATCH_NAMESPACE
               valueFrom:
@@ -67,6 +68,8 @@ spec:
               value: "64"
             - name: RECONCILE_MIN_INTERVAL
               value: "1s"
+            - name: K8S_API_TIMEOUT
+              value: "10s"
             - name: POD_NAMESPACE
               valueFrom:
                 fieldRef:

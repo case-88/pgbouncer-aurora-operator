@@ -6,6 +6,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/client-go/rest"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -24,6 +25,20 @@ func TestManagerCacheOptionsRestrictsNamespace(t *testing.T) {
 	podOptions, ok := podCacheOptions(options.ByObject)
 	if !ok || !podOptions.Label.Matches(labels.Set{render.LabelManagedBy: render.ManagedByValue}) {
 		t.Fatalf("pod cache label selector missing: %#v", options.ByObject)
+	}
+}
+
+func TestApplyKubernetesAPITimeout(t *testing.T) {
+	config := &rest.Config{}
+	if got := applyKubernetesAPITimeout(config, 10*time.Second); got != config {
+		t.Fatalf("config pointer should be preserved")
+	}
+	if config.Timeout != 10*time.Second {
+		t.Fatalf("timeout mismatch: %s", config.Timeout)
+	}
+	applyKubernetesAPITimeout(config, 0)
+	if config.Timeout != 10*time.Second {
+		t.Fatalf("non-positive timeout should not clear existing timeout: %s", config.Timeout)
 	}
 }
 
@@ -124,6 +139,13 @@ func TestEffectiveDurationPrefersFlagThenEnvThenDefault(t *testing.T) {
 	t.Setenv("RESYNC_PERIOD", "")
 	if got, err := effectiveDuration(0, "RESYNC_PERIOD", time.Minute); err != nil || got != time.Minute {
 		t.Fatalf("default duration should be used: got=%s err=%v", got, err)
+	}
+}
+
+func TestEffectiveKubernetesAPITimeoutDefault(t *testing.T) {
+	t.Setenv("K8S_API_TIMEOUT", "")
+	if got, err := effectiveDuration(0, "K8S_API_TIMEOUT", defaultKubernetesAPITimeout); err != nil || got != 10*time.Second {
+		t.Fatalf("default Kubernetes API timeout should be used: got=%s err=%v", got, err)
 	}
 }
 

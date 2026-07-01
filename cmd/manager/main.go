@@ -17,6 +17,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/client-go/rest"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -42,6 +43,7 @@ const (
 	defaultAWSAPIBurst             = 1
 	defaultWorkersPerCR            = 10
 	defaultRDSMetadataRefresh      = time.Minute
+	defaultKubernetesAPITimeout    = 10 * time.Second
 	minRDSMetadataCacheTTL         = 5 * time.Minute
 	minRDSMetadataRefresh          = 10 * time.Second
 )
@@ -70,6 +72,7 @@ func main() {
 	var workersPerCR int
 	var statusRefreshMinInterval time.Duration
 	var statusRecentWindow time.Duration
+	var kubernetesAPITimeout time.Duration
 	var zapDevel bool
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "The address the metric endpoint binds to.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
@@ -87,6 +90,7 @@ func main() {
 	flag.IntVar(&workersPerCR, "workers-per-cr", 0, "Maximum concurrent backend monitor probes per PgBouncerAurora CR. Defaults to WORKERS_PER_CR or 10.")
 	flag.DurationVar(&statusRefreshMinInterval, "status-refresh-min-interval", 0, "Minimum interval for refreshing the cached /status snapshot. Defaults to STATUS_REFRESH_MIN_INTERVAL or 5s.")
 	flag.DurationVar(&statusRecentWindow, "status-recent-window", 0, "Window for highlighting recently changed /status items. Defaults to STATUS_RECENT_WINDOW or 1m; clamped to 1m..24h.")
+	flag.DurationVar(&kubernetesAPITimeout, "k8s-api-timeout", 0, "Kubernetes API request timeout. Defaults to K8S_API_TIMEOUT or 10s.")
 	flag.BoolVar(&zapDevel, "zap-devel", false, "Enable development-mode logging.")
 	flag.Parse()
 
@@ -142,6 +146,11 @@ func main() {
 		ctrl.Log.Error(err, "invalid status recent window")
 		os.Exit(1)
 	}
+	kubernetesAPITimeout, err = effectiveDuration(kubernetesAPITimeout, "K8S_API_TIMEOUT", defaultKubernetesAPITimeout)
+	if err != nil {
+		ctrl.Log.Error(err, "invalid Kubernetes API timeout")
+		os.Exit(1)
+	}
 	cacheOptions := managerCacheOptions(watchNamespace, resyncPeriod)
 	statusServer := statuspage.NewServer(statuspage.Options{
 		Namespace:          watchNamespace,
@@ -150,8 +159,9 @@ func main() {
 		RecentWindow:       statusRecentWindow,
 		Log:                ctrl.Log.WithName("status"),
 	})
+	kubernetesConfig := applyKubernetesAPITimeout(ctrl.GetConfigOrDie(), kubernetesAPITimeout)
 
-	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
+	mgr, err := ctrl.NewManager(kubernetesConfig, ctrl.Options{
 		Scheme:                 scheme,
 		Metrics:                metricsserver.Options{BindAddress: metricsAddr, ExtraHandlers: statusServer.ExtraHandlers()},
 		HealthProbeBindAddress: probeAddr,
@@ -259,6 +269,13 @@ func managerCacheOptions(watchNamespace string, resyncPeriod time.Duration) cach
 		options.SyncPeriod = &resyncPeriod
 	}
 	return options
+}
+
+func applyKubernetesAPITimeout(config *rest.Config, timeout time.Duration) *rest.Config {
+	if config != nil && timeout > 0 {
+		config.Timeout = timeout
+	}
+	return config
 }
 
 func effectiveWatchNamespace(flagValue string) string {
