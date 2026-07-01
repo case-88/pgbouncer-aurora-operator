@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "properties": {
+    "watch": {
+      "type": "object",
+      "properties": {
+        "names": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^(\\*|[a-z0-9]([-a-z0-9]*[a-z0-9])?(,[a-z0-9]([-a-z0-9]*[a-z0-9])?)*)$",
+          "description": "Use * or a comma-separated list of PgBouncerAurora resource names."
+        }
+      }
+    }
+  }
+}

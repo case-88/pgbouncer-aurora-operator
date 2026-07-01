@@ -1,0 +1,130 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "pgbouncer-aurora-operator.fullname" . }}
+  labels:
+    {{- include "pgbouncer-aurora-operator.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "pgbouncer-aurora-operator.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "pgbouncer-aurora-operator.selectorLabels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      serviceAccountName: {{ include "pgbouncer-aurora-operator.serviceAccountName" . }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: manager
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          args:
+            {{- if .Values.controller.leaderElect }}
+            - --leader-elect
+            {{- end }}
+            - --aws-region={{ .Values.aws.region }}
+            - --watch-namespace=$(WATCH_NAMESPACE)
+            - --watch-names=$(WATCH_NAMES)
+            - --status-refresh-min-interval=$(STATUS_REFRESH_MIN_INTERVAL)
+            - --status-recent-window=$(STATUS_RECENT_WINDOW)
+            - --rds-metadata-refresh-interval=$(RDS_METADATA_REFRESH_INTERVAL)
+            - --aws-api-qps=$(AWS_API_QPS)
+            - --aws-api-burst=$(AWS_API_BURST)
+            - --workers-per-cr=$(WORKERS_PER_CR)
+            - --max-concurrent-reconciles=$(MAX_CONCURRENT_RECONCILES)
+            - --reconcile-min-interval=$(RECONCILE_MIN_INTERVAL)
+            {{- if .Values.controller.k8sApiTimeout }}
+            - --k8s-api-timeout=$(K8S_API_TIMEOUT)
+            {{- end }}
+            {{- with .Values.extraArgs }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          env:
+            - name: WATCH_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: metadata.namespace
+            - name: WATCH_NAMES
+              value: {{ .Values.watch.names | quote }}
+            - name: STATUS_REFRESH_MIN_INTERVAL
+              value: {{ .Values.status.refreshMinInterval | quote }}
+            - name: STATUS_RECENT_WINDOW
+              value: {{ .Values.status.recentWindow | quote }}
+            - name: RDS_METADATA_REFRESH_INTERVAL
+              value: {{ .Values.controller.rdsMetadataRefreshInterval | quote }}
+            - name: AWS_API_QPS
+              value: {{ .Values.aws.apiQPS | quote }}
+            - name: AWS_API_BURST
+              value: {{ .Values.aws.apiBurst | quote }}
+            - name: WORKERS_PER_CR
+              value: {{ .Values.controller.workersPerCR | quote }}
+            - name: MAX_CONCURRENT_RECONCILES
+              value: {{ .Values.controller.maxConcurrentReconciles | quote }}
+            - name: RECONCILE_MIN_INTERVAL
+              value: {{ .Values.controller.reconcileMinInterval | quote }}
+            {{- if .Values.controller.k8sApiTimeout }}
+            - name: K8S_API_TIMEOUT
+              value: {{ .Values.controller.k8sApiTimeout | quote }}
+            {{- end }}
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: metadata.namespace
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          ports:
+            - name: metrics
+              containerPort: 8080
+            - name: health
+              containerPort: 8081
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: health
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: health
+          {{- with .Values.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.extraVolumeMounts }}
+          volumeMounts:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      {{- with .Values.extraVolumes }}
+      volumes:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

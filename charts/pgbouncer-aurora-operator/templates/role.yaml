@@ -1,0 +1,36 @@
+{{- if .Values.rbac.create }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "pgbouncer-aurora-operator.fullname" . }}
+  labels:
+    {{- include "pgbouncer-aurora-operator.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["pgbouncer-aurora.io"]
+    resources: ["pgbouncerauroras"]
+    verbs: ["get", "list", "watch", "update", "patch"]
+  - apiGroups: ["pgbouncer-aurora.io"]
+    resources: ["pgbouncerauroras/status"]
+    verbs: ["get", "update", "patch"]
+  - apiGroups: ["pgbouncer-aurora.io"]
+    resources: ["pgbouncerauroras/finalizers"]
+    verbs: ["update", "patch"]
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["services", "configmaps"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch", "patch"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get"]
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create", "patch", "update"]
+{{- end }}
