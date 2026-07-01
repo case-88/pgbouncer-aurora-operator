@@ -22,15 +22,11 @@ watches the Helm release namespace through a namespace-scoped Role.
 
 ## Install
 
-Install from the Quay OCI chart repository:
+Install from the Quay OCI registry:
 
 ```bash
-VERSION=v0.1.0
-helm install pgbouncer-aurora-operator \
-  oci://quay.io/case-88/charts/pgbouncer-aurora-operator \
-  --version ${VERSION#v} \
-  --namespace pgbouncer-aurora \
-  --create-namespace
+helm install pgbouncer-aurora-operator oci://quay.io/case-88/charts/pgbouncer-aurora-operator \
+  --version 0.1.0 --namespace pgbouncer-aurora --create-namespace
 ```
 
 Then apply environment-specific Secrets and `PgBouncerAurora` CR manifests
@@ -39,12 +35,8 @@ separately.
 ## Upgrade
 
 ```bash
-VERSION=v0.1.0
-
-helm upgrade pgbouncer-aurora-operator \
-  oci://quay.io/case-88/charts/pgbouncer-aurora-operator \
-  --version ${VERSION#v} \
-  --namespace pgbouncer-aurora
+helm upgrade pgbouncer-aurora-operator oci://quay.io/case-88/charts/pgbouncer-aurora-operator \
+  --version 0.1.0 --namespace pgbouncer-aurora
 ```
 
 Reference: if you use Helm 3.17.0 or later, use `--take-ownership` to take
@@ -52,12 +44,8 @@ ownership of CRDs that were previously installed through a chart `crds/`
 directory:
 
 ```bash
-VERSION=v0.1.0
-helm upgrade pgbouncer-aurora-operator \
-  oci://quay.io/case-88/charts/pgbouncer-aurora-operator \
-  --version ${VERSION#v} \
-  --namespace pgbouncer-aurora \
-  --take-ownership
+helm upgrade pgbouncer-aurora-operator oci://quay.io/case-88/charts/pgbouncer-aurora-operator \
+  --version 0.1.0 --namespace pgbouncer-aurora --take-ownership
 ```
 
 For local development, replace the OCI reference with

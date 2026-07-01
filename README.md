@@ -8,7 +8,7 @@
 
 `pgbouncer-aurora-operator` watches Aurora PostgreSQL topology and runs one PgBouncer per DB instance (1:1). Applications can connect through fixed Writer/Reader Kubernetes Services, or through per-instance Services as a host-list, while the operator keeps Service membership aligned with the current Aurora roles. Its goal is to reduce the Reader connection skew that PgBouncer pooling introduces and to reflect topology changes such as instance scaling and failover into the connection layer automatically.
 
-> Status: public alpha — `v0.1.0-alpha.1` (CRD API `v1alpha1`). A multi-arch image (`linux/amd64`, `linux/arm64`) is published on Quay and raw Kubernetes manifests ship under `deploy/`. APIs and manifests may still change before a stable release; a Helm chart is not available yet.
+> Status: public alpha — `v0.1.0` (CRD API `v1alpha1`). A multi-arch image (`linux/amd64`, `linux/arm64`) is published on Quay, manifests ship under `deploy/`, and the Helm chart is available from the Quay OCI chart registry. APIs and manifests may still change before a stable release.
 
 ## Table of Contents
 
@@ -222,22 +222,22 @@ The AWS docs recommend "listing individual instance nodes in a host-list" for th
 
 ## Installation
 
-This installs the published public alpha image with `kubectl`. To build and run your own image instead, see [Build from source](#build-from-source-custom-image).
+This installs the published public alpha image. Use either Manifest or Helm chart for the operator runtime. To build and run your own image instead, see [Build from source](#build-from-source-custom-image).
 
-> **Pre-release.** This is an alpha (`v0.1.0-alpha.1`); the API and manifests may change before a stable release. Pin the explicit version tag shown below — the `latest` tag is intentionally not published. See [Requirements](#requirements) for the cluster, Aurora, IAM, and network prerequisites.
+> **Pre-release.** This is an alpha (`v0.1.0`); the API and manifests may change before a stable release. Pin the explicit version tag shown below — the `latest` tag is intentionally not published. See [Requirements](#requirements) for the cluster, Aurora, IAM, and network prerequisites.
 
-### 1. Install the operator
+### 1-A. Install the operator with Manifest
 
 ```bash
 # Set your environment
-VERSION=v0.1.0-alpha.1
+VERSION=v0.1.0
 NAMESPACE=pgbouncer-aurora
 OPERATOR_IMAGE=quay.io/case-88/pgbouncer-aurora-operator:${VERSION}
-RAW=https://raw.githubusercontent.com/case-88/pgbouncer-aurora-operator/${VERSION}/deploy
+MANIFEST_BASE=https://raw.githubusercontent.com/case-88/pgbouncer-aurora-operator/${VERSION}/deploy
 
 kubectl create namespace ${NAMESPACE}
-kubectl apply --server-side -f ${RAW}/crd.yaml
-kubectl apply -f ${RAW}/serviceaccount.yaml -f ${RAW}/role.yaml -f ${RAW}/rolebinding.yaml -f ${RAW}/operator.yaml
+kubectl apply --server-side -f ${MANIFEST_BASE}/crd.yaml
+kubectl apply -f ${MANIFEST_BASE}/serviceaccount.yaml -f ${MANIFEST_BASE}/role.yaml -f ${MANIFEST_BASE}/rolebinding.yaml -f ${MANIFEST_BASE}/operator.yaml
 
 # The bundled deploy/operator.yaml ships a placeholder image, so point the
 # Deployment at the published Quay image:
@@ -247,13 +247,40 @@ kubectl -n ${NAMESPACE} rollout status deploy/pgbouncer-aurora-operator
 
 The bundled manifests are namespaced to `pgbouncer-aurora`; keep `NAMESPACE` set to that value, or edit the manifests' `namespace:` fields to install elsewhere.
 
-### 2. Configure credentials and a PgBouncerAurora resource
+### 1-B. Install the operator with Helm chart
 
-The Secret and the CR carry environment-specific values — DB user/password, `userlist.txt`, `clusterName`/`domainName`, the PgBouncer image, and so on — so download them, edit, then apply. Do not apply the raw URLs directly.
+The Helm chart is installed from the Quay OCI registry.
 
 ```bash
-curl -fsSLo /tmp/pgbouncer-aurora-secrets.yaml ${RAW}/secrets.yaml
-curl -fsSLo /tmp/pgbouncer-aurora.yaml         ${RAW}/cr.yaml
+helm install pgbouncer-aurora-operator oci://quay.io/case-88/charts/pgbouncer-aurora-operator \
+  --version 0.1.0 --namespace pgbouncer-aurora --create-namespace
+```
+
+The chart installs the `PgBouncerAurora` CRD and operator runtime: ServiceAccount, Role, RoleBinding, Deployment, metrics Service, and status NetworkPolicy. Environment-specific Secrets and `PgBouncerAurora` resources are not created by the chart; apply them separately in the next step.
+
+Helm upgrade:
+
+```bash
+helm upgrade pgbouncer-aurora-operator oci://quay.io/case-88/charts/pgbouncer-aurora-operator \
+  --version 0.1.0 --namespace pgbouncer-aurora
+```
+
+Reference: with Helm `3.17.0` or later, use `--take-ownership` if you need to take ownership of a CRD that was previously installed through a chart `crds/` directory.
+
+```bash
+helm upgrade pgbouncer-aurora-operator oci://quay.io/case-88/charts/pgbouncer-aurora-operator \
+  --version 0.1.0 --namespace pgbouncer-aurora --take-ownership
+```
+
+### 2. Configure credentials and a PgBouncerAurora resource
+
+The Secret and the CR carry environment-specific values — DB user/password, `userlist.txt`, `clusterName`/`domainName`, the PgBouncer image, and so on — so download them, edit, then apply. Do not apply the remote URLs directly.
+
+```bash
+VERSION=v0.1.0
+MANIFEST_BASE=https://raw.githubusercontent.com/case-88/pgbouncer-aurora-operator/${VERSION}/deploy
+curl -fsSLo /tmp/pgbouncer-aurora-secrets.yaml ${MANIFEST_BASE}/secrets.yaml
+curl -fsSLo /tmp/pgbouncer-aurora.yaml         ${MANIFEST_BASE}/cr.yaml
 
 # Edit both files:
 #   secrets.yaml — DB username/password and the userlist.txt entries
@@ -653,7 +680,7 @@ DOCKER=true ./hack/check.sh
 go test -race -count=1 ./...
 ```
 
-The smoke script is designed to be safe by default. `./hack/smoke-test.sh` only validates the raw manifests locally unless you pass `APPLY=true`. For Kubernetes API-server validation without creating resources, use `DRY_RUN=server VALIDATE=true ./hack/smoke-test.sh`.
+The smoke script is designed to be safe by default. `./hack/smoke-test.sh` only validates the manifests locally unless you pass `APPLY=true`. For Kubernetes API-server validation without creating resources, use `DRY_RUN=server VALIDATE=true ./hack/smoke-test.sh`.
 
 ### Build from source (custom image)
 
