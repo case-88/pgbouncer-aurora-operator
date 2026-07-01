@@ -273,7 +273,7 @@ func (r *PgBouncerAuroraReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 				"writerMembersAfter", plan.Membership.Writer,
 				"readerMembersBefore", resource.Status.LastAppliedMembership.Reader,
 				"readerMembersAfter", plan.Membership.Reader,
-				"connectionHandling", resource.Spec.TopologyPolicy.WriterChangeConnectionHandling,
+				"connectionHandling", effectiveWriterChangeConnectionHandling(resource),
 			)
 		}
 		applyStarted := time.Now()
@@ -316,7 +316,7 @@ func (r *PgBouncerAuroraReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 				"writerMembersAfter", plan.Membership.Writer,
 				"readerMembersBefore", resource.Status.LastAppliedMembership.Reader,
 				"readerMembersAfter", plan.Membership.Reader,
-				"connectionHandling", resource.Spec.TopologyPolicy.WriterChangeConnectionHandling,
+				"connectionHandling", effectiveWriterChangeConnectionHandling(resource),
 				"duration", time.Since(applyStarted).String(),
 			)
 		}
@@ -1410,8 +1410,8 @@ func (r *PgBouncerAuroraReconciler) deleteInstanceResources(ctx context.Context,
 }
 
 func (r *PgBouncerAuroraReconciler) handleWriterChangeConnection(ctx context.Context, resource *v1alpha1.PgBouncerAurora, plan planner.Output) error {
-	policy := resource.Spec.TopologyPolicy.WriterChangeConnectionHandling
-	if policy == "" || policy == v1alpha1.WriterChangeKeepExisting || !membershipChanged(resource.Status.LastAppliedMembership.Writer, plan.Membership.Writer) {
+	policy := effectiveWriterChangeConnectionHandling(resource)
+	if policy == v1alpha1.WriterChangeKeepExisting || !membershipChanged(resource.Status.LastAppliedMembership.Writer, plan.Membership.Writer) {
 		return nil
 	}
 	if len(resource.Status.LastAppliedMembership.Writer) == 0 {
@@ -1439,6 +1439,13 @@ func (r *PgBouncerAuroraReconciler) handleWriterChangeConnection(ctx context.Con
 	}
 	token := writerRestartToken(resource, plan, policy, names)
 	return r.restartInstanceDeployments(ctx, resource, names, token)
+}
+
+func effectiveWriterChangeConnectionHandling(resource *v1alpha1.PgBouncerAurora) v1alpha1.WriterChangeConnectionHandling {
+	if resource == nil || resource.Spec.TopologyPolicy.WriterChangeConnectionHandling == "" {
+		return v1alpha1.WriterChangeRestartWriters
+	}
+	return resource.Spec.TopologyPolicy.WriterChangeConnectionHandling
 }
 
 func (r *PgBouncerAuroraReconciler) restartInstanceDeployments(ctx context.Context, resource *v1alpha1.PgBouncerAurora, instanceNames map[string]bool, token string) error {
@@ -1857,6 +1864,7 @@ func missingInstancesFor(resource *v1alpha1.PgBouncerAurora, discovery domain.Di
 	current := discoveredInstanceSet(discovery.Instances)
 	existing := map[string]v1alpha1.MissingInstanceStatus{}
 	candidates := map[string]bool{}
+	fastRemove := stringSet(discovery.RemovingInstances)
 	for _, missing := range resource.Status.MissingInstances {
 		if missing.InstanceName == "" || current[missing.InstanceName] {
 			continue
@@ -1882,6 +1890,9 @@ func missingInstancesFor(resource *v1alpha1.PgBouncerAurora, discovery domain.Di
 		item := existing[name]
 		item.InstanceName = name
 		item.MissingCount++
+		if fastRemove[name] && item.MissingCount < removeAfterMissingCount(resource) {
+			item.MissingCount = removeAfterMissingCount(resource)
+		}
 		if item.FirstMissingTime == nil {
 			item.FirstMissingTime = cloneTime(now)
 		}

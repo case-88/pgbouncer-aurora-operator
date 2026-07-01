@@ -35,6 +35,9 @@ type DiscoverySpec struct {
 	Port             int32                         `json:"port,omitempty"`
 	ClusterEndpoints DiscoveryClusterEndpointsSpec `json:"clusterEndpoints,omitempty"`
 	Database         string                        `json:"database,omitempty"`
+	// +kubebuilder:default=require
+	// +kubebuilder:validation:Enum=disable;allow;prefer;require;verify-ca;verify-full
+	SSLMode string `json:"sslMode,omitempty"`
 	// +kubebuilder:validation:Required
 	AuthSecretRef           corev1.LocalObjectReference `json:"authSecretRef,omitempty"`
 	Interval                metav1.Duration             `json:"interval,omitempty"`
@@ -58,14 +61,10 @@ type DiscoveryEndpointSpec struct {
 }
 
 type MonitorSpec struct {
-	Interval           metav1.Duration `json:"interval,omitempty"`
-	Timeout            metav1.Duration `json:"timeout,omitempty"`
-	FailureThreshold   int32           `json:"failureThreshold,omitempty"`
-	RecoveryThreshold  int32           `json:"recoveryThreshold,omitempty"`
-	MaxConcurrency     int32           `json:"maxConcurrency,omitempty"`
-	DirectDBProbe      *bool           `json:"directDBProbe,omitempty"`
-	PgBouncerPathProbe *bool           `json:"pgbouncerPathProbe,omitempty"`
-	DirectDBSSLMode    string          `json:"directDBSSLMode,omitempty"`
+	Interval          metav1.Duration `json:"interval,omitempty"`
+	Timeout           metav1.Duration `json:"timeout,omitempty"`
+	FailureThreshold  int32           `json:"failureThreshold,omitempty"`
+	RecoveryThreshold int32           `json:"recoveryThreshold,omitempty"`
 }
 
 type PgBouncerSpec struct {
@@ -132,8 +131,9 @@ type PerInstanceServiceSpec struct {
 }
 
 type TopologyPolicySpec struct {
-	RemoveAfterMissingCount        int32                          `json:"removeAfterMissingCount,omitempty"`
-	RemovedInstanceRetention       metav1.Duration                `json:"removedInstanceRetention,omitempty"`
+	RemoveAfterMissingCount  int32           `json:"removeAfterMissingCount,omitempty"`
+	RemovedInstanceRetention metav1.Duration `json:"removedInstanceRetention,omitempty"`
+	// +kubebuilder:default=RestartWriters
 	WriterChangeConnectionHandling WriterChangeConnectionHandling `json:"writerChangeConnectionHandling,omitempty"`
 	ReaderEmptyFallback            ReaderEmptyFallbackSpec        `json:"readerEmptyFallback,omitempty"`
 	ZoneAware                      ZoneAwareSpec                  `json:"zoneAware,omitempty"`
@@ -304,8 +304,6 @@ func deepCopySpec(in PgBouncerAuroraSpec) PgBouncerAuroraSpec {
 		out.PgBouncer.Replicas = new(int32)
 		*out.PgBouncer.Replicas = *in.PgBouncer.Replicas
 	}
-	out.Monitor.DirectDBProbe = cloneBoolPtr(in.Monitor.DirectDBProbe)
-	out.Monitor.PgBouncerPathProbe = cloneBoolPtr(in.Monitor.PgBouncerPathProbe)
 	out.PgBouncer.Config = deepCopyPgBouncerConfigSpec(in.PgBouncer.Config)
 	if in.PgBouncer.InstanceOverrides != nil {
 		out.PgBouncer.InstanceOverrides = make([]InstanceOverrideSpec, len(in.PgBouncer.InstanceOverrides))

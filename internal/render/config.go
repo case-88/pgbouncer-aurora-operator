@@ -11,11 +11,10 @@ import (
 )
 
 const (
-	defaultAuthFilePath               = "/etc/pgbouncer/userlist.txt"
-	defaultListenAddr                 = "0.0.0.0"
-	defaultPgBouncerAuthType          = "md5"
-	defaultPgBouncerListenPort  int32 = 6432
-	PgBouncerProbeDatabaseAlias       = "pgbouncer_aurora_probe"
+	defaultAuthFilePath              = "/etc/pgbouncer/userlist.txt"
+	defaultListenAddr                = "0.0.0.0"
+	defaultPgBouncerAuthType         = "md5"
+	defaultPgBouncerListenPort int32 = 6432
 )
 
 func PgBouncerINI(spec v1alpha1.PgBouncerAuroraSpec, instance domain.InstanceObservation) string {
@@ -65,15 +64,12 @@ func authFilePathFromConfig(config v1alpha1.PgBouncerConfigSpec) string {
 
 func writeDatabasesSection(builder *strings.Builder, spec v1alpha1.PgBouncerAuroraSpec, instance domain.InstanceObservation, databases map[string]map[string]string) {
 	builder.WriteString("[databases]\n")
-	effectiveDatabases := make(map[string]map[string]string, len(databases)+2)
+	effectiveDatabases := make(map[string]map[string]string, len(databases)+1)
 	if len(databases) == 0 {
 		effectiveDatabases["*"] = map[string]string{}
 	}
 	for name, options := range databases {
 		effectiveDatabases[name] = options
-	}
-	if pgBouncerPathProbeEnabled(spec.Monitor.PgBouncerPathProbe) {
-		effectiveDatabases[PgBouncerProbeDatabaseAlias] = map[string]string{"dbname": probeBackendDatabase(spec)}
 	}
 	names := sortedNames(effectiveDatabases)
 	for _, name := range names {
@@ -81,18 +77,6 @@ func writeDatabasesSection(builder *strings.Builder, spec v1alpha1.PgBouncerAuro
 		builder.WriteByte('\n')
 	}
 	builder.WriteByte('\n')
-}
-
-func probeBackendDatabase(spec v1alpha1.PgBouncerAuroraSpec) string {
-	value := strings.TrimSpace(spec.Discovery.Database)
-	if value == "" {
-		return "postgres"
-	}
-	return value
-}
-
-func pgBouncerPathProbeEnabled(value *bool) bool {
-	return value == nil || *value
 }
 
 func databaseLine(name string, spec v1alpha1.PgBouncerAuroraSpec, instance domain.InstanceObservation, options map[string]string) string {

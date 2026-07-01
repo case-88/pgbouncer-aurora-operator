@@ -64,7 +64,7 @@ func TestRDSMetadataResolverResolve(t *testing.T) {
 		t.Fatalf("seen instances = %#v", client.seenInstances)
 	}
 	got := metadata["db-1"]
-	if got.InstanceName != "db-1" || got.AvailabilityZone != az || got.DbiResourceId != "dbi-db-1" {
+	if got.InstanceName != "db-1" || got.AvailabilityZone != az || got.DbiResourceId != "dbi-db-1" || got.Status != "available" {
 		t.Fatalf("metadata = %#v", got)
 	}
 }

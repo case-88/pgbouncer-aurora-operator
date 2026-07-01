@@ -29,6 +29,9 @@ func TestCRDRequiresRuntimeCriticalFields(t *testing.T) {
 	assertMinLength(t, objectAt(t, discovery, "properties", "clusterEndpoints", "properties", "reader", "properties", "host"), 1)
 	assertRequired(t, objectAt(t, discovery, "properties", "authSecretRef"), "name")
 	assertMinLength(t, objectAt(t, discovery, "properties", "authSecretRef", "properties", "name"), 1)
+	sslMode := objectAt(t, discovery, "properties", "sslMode")
+	assertDefault(t, sslMode, "require")
+	assertEnum(t, sslMode, "disable", "allow", "prefer", "require", "verify-ca", "verify-full")
 
 	pgbouncer := objectAt(t, specSchema, "properties", "pgbouncer")
 	assertRequired(t, pgbouncer, "image", "authFileSecretRef")
@@ -43,6 +46,7 @@ func TestCRDRequiresRuntimeCriticalFields(t *testing.T) {
 
 	zoneAware := objectAt(t, specSchema, "properties", "topologyPolicy", "properties", "zoneAware")
 	assertDefault(t, objectAt(t, zoneAware, "properties", "conflictPolicy"), "Warn")
+	assertDefault(t, objectAt(t, specSchema, "properties", "topologyPolicy", "properties", "writerChangeConnectionHandling"), "RestartWriters")
 }
 
 func readCRDManifest(t *testing.T) []byte {
@@ -134,5 +138,29 @@ func assertDefault(t *testing.T, schema map[string]any, want string) {
 	got, ok := schema["default"].(string)
 	if !ok || got != want {
 		t.Fatalf("default mismatch: got %#v want %q in %#v", schema["default"], want, schema)
+	}
+}
+
+func assertEnum(t *testing.T, schema map[string]any, names ...string) {
+	t.Helper()
+	values, ok := schema["enum"].([]any)
+	if !ok {
+		t.Fatalf("schema has no enum: %#v", schema)
+	}
+	if len(values) != len(names) {
+		t.Fatalf("enum length mismatch: got %v want %v", values, names)
+	}
+	seen := make(map[string]bool, len(values))
+	for _, value := range values {
+		name, ok := value.(string)
+		if !ok {
+			t.Fatalf("enum value is not string: %#v", value)
+		}
+		seen[name] = true
+	}
+	for _, name := range names {
+		if !seen[name] {
+			t.Fatalf("enum value %q not found in %v", name, values)
+		}
 	}
 }

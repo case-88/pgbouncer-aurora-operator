@@ -92,6 +92,10 @@ spec:
                     database:
                       type: string
                       default: postgres
+                    sslMode:
+                      type: string
+                      enum: [disable, allow, prefer, require, verify-ca, verify-full]
+                      default: require
                     authSecretRef:
                       type: object
                       required:
@@ -134,19 +138,6 @@ spec:
                       format: int32
                       minimum: 1
                       default: 2
-                    maxConcurrency:
-                      type: integer
-                      format: int32
-                      minimum: 1
-                      default: 4
-                    directDBProbe:
-                      type: boolean
-                      default: true
-                    pgbouncerPathProbe:
-                      type: boolean
-                      default: true
-                    directDBSSLMode:
-                      type: string
                 pgbouncer:
                   type: object
                   required:
@@ -365,7 +356,7 @@ spec:
                     writerChangeConnectionHandling:
                       type: string
                       enum: [KeepExisting, RestartWriters, RestartAll]
-                      default: KeepExisting
+                      default: RestartWriters
                     readerEmptyFallback:
                       type: object
                       default: {}

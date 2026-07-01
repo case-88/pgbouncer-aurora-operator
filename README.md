@@ -81,8 +81,7 @@ flowchart LR
 
 - **Monitoring**
   - Checks PgBouncer Pod readiness first.
-  - Optionally connects directly to the backend DB and checks role/health via `pg_is_in_recovery()` and `transaction_read_only`.
-  - Optionally checks the PgBouncer path via the per-instance PgBouncer Service with `select 1`.
+  - Always connects directly to the backend DB and checks role/health via `pg_is_in_recovery()` and `transaction_read_only`.
   - Applies failure/recovery thresholds before changing healthy Service membership.
   - During Writer failover, Discovery is the source of truth for role, and Monitor is treated as a sanity check rather than the primary gate.
 
@@ -100,8 +99,9 @@ The value of this operator is "automatic topology reflection." Its responsibilit
 PgBouncer is a lightweight, high-performance **connection pooler**, not an HA proxy, and this operator does not change that nature. What the operator does is keep the pooling layer always pointed at the instances with the correct roles.
 
 - **The nature of Aurora failover**: at promotion, connections to the old Writer are dropped, and any in-flight transactions at that moment fail 100%. This is inherent to Aurora failover regardless of what proxy sits in front.
-- **Default behavior is non-destructive**: when the Writer changes, the operator only switches Service membership and does not forcibly move already-established app→PgBouncer connections (`writerChangeConnectionHandling: KeepExisting`).
-- **Optional connection cleanup**: to drop the stale server connections of an instance whose role changed and induce reconnection, you can set `writerChangeConnectionHandling` to `RestartWriters`/`RestartAll`. Per-instance Deployments use `RollingUpdate(maxUnavailable=0, maxSurge=1)`, so **running with `replicas: 2` or more makes this a rolling restart that avoids taking all PgBouncer replicas for that instance down at once** — Pods are replaced one at a time while the instance keeps serving new connections (existing connections on a restarted Pod are still dropped). With `replicas: 1`, the instance has a brief interruption during the restart. Therefore **`replicas: 2` or more is recommended in production**.
+- **Recommended Writer change cleanup**: `writerChangeConnectionHandling: RestartWriters` is recommended for production. Driver role checks such as `targetServerType` and `target_session_attrs` select a suitable host when a new connection is opened; they do not continuously monitor the role of an already-open connection. Restarting the old/new Writer PgBouncer Deployments drops stale app→PgBouncer and PgBouncer→Aurora connections and forces the application/pool to reconnect through the current Writer path.
+- **Non-destructive option**: `writerChangeConnectionHandling: KeepExisting` only switches Service membership and does not forcibly move already-established app→PgBouncer connections. It can preserve connections, but wrong-role connections may stay alive longer after failover, so it is not recommended for normal production failover handling.
+- **Restart scope**: `RestartWriters` restarts the PgBouncer Deployments connected to the old and new Writer members on Writer changes. `RestartAll` restarts all managed PgBouncer Deployments. Per-instance Deployments use `RollingUpdate(maxUnavailable=0, maxSurge=1)`, so **running with `replicas: 2` or more makes this a rolling restart that avoids taking all PgBouncer replicas for that instance down at once** — Pods are replaced one at a time while the instance keeps serving new connections (existing connections on a restarted Pod are still dropped). With `replicas: 1`, the instance has a brief interruption during the restart. Therefore **`replicas: 2` or more is recommended in production**.
 
 If you need strong zero-downtime HA at the level of preserving connections, consider a layer designed for that purpose, such as Pgpool-II or PgCat.
 
@@ -138,7 +138,7 @@ There are three ways for an application to point at the Services the operator cr
 postgresql://example-pg-writer.<namespace>.svc.cluster.local:6432,example-pg-reader.<namespace>.svc.cluster.local:6432/db?targetServerType=primary
 ```
 
-- The driver takes these two Services as a host-list and picks the target directly by role according to `targetServerType` — `primary` attaches to the Writer, `secondary`/`preferSecondary` attaches to the Reader. The example above is a write connection (`primary`); a read connection uses the same host-list with `secondary`. During the failover transition, whichever Service points at whichever role, the driver re-checks the actual role and follows it.
+- The driver takes these two Services as a host-list and picks the target directly by role according to `targetServerType` when opening a new connection — `primary` attaches to the Writer, `secondary`/`preferSecondary` attaches to the Reader. The example above is a write connection (`primary`); a read connection uses the same host-list with `secondary`. Existing connections are not continuously role-checked by the driver, so failover recovery still depends on the application/pool discarding broken or wrong-role connections and opening new ones.
 - The Service names (`<cr-name>-writer`, `<cr-name>-reader`) are fixed and the operator updates membership, so Aurora scale/topology changes are reflected automatically.
 
 **Method 2 — split read/write connections to the Reader/Writer Service respectively (simplest)**
@@ -234,7 +234,7 @@ curl -fsSLo /tmp/pgbouncer-aurora-secrets.yaml ${RAW}/secrets.yaml
 curl -fsSLo /tmp/pgbouncer-aurora.yaml         ${RAW}/cr.yaml
 
 # Edit both files:
-#   secrets.yaml — DB username/password/sslmode and the userlist.txt entries
+#   secrets.yaml — DB username/password and the userlist.txt entries
 #   cr.yaml      — discovery clusterName/domainName/port, pgbouncer.image, etc.
 $EDITOR /tmp/pgbouncer-aurora-secrets.yaml /tmp/pgbouncer-aurora.yaml
 
@@ -304,7 +304,8 @@ spec:
 | `spec.discovery.clusterEndpoints.reader.host` | Advanced | generated | DNS name | Explicit Reader endpoint override. |
 | `spec.discovery.clusterEndpoints.reader.port` | Advanced | `spec.discovery.port` | TCP port | Explicit Reader endpoint port override. |
 | `spec.discovery.database` | No | `postgres` | database name | Database used for the discovery connection. |
-| `spec.discovery.authSecretRef.name` | Yes | none | Secret name | Operator DB credential Secret. Used for Aurora discovery, the direct DB monitor probe, and the PgBouncer path probe. |
+| `spec.discovery.sslMode` | No | `require` | PostgreSQL SSL mode | SSL mode used by Aurora discovery and direct DB monitor probe connections. |
+| `spec.discovery.authSecretRef.name` | Yes | none | Secret name | Operator DB credential Secret. Used for Aurora discovery and the direct DB monitor probe. |
 | `spec.discovery.interval` | No | `3s` | Go duration | Minimum interval for Aurora topology discovery checks. Internal floor `1s`. |
 | `spec.discovery.metadataRefreshInterval` | No | `1m` | Go duration | Minimum interval for the auxiliary RDS AZ/`DbiResourceId` metadata refresh. Intentionally decoupled from the Aurora role discovery interval. |
 | `spec.discovery.timeout` | No | `3s` | Go duration | Timeout for discovery DB queries. |
@@ -328,20 +329,13 @@ The operator does not infer the AWS region from `spec.discovery.domainName`. RDS
 | `spec.monitor.timeout` | No | `3s` | Go duration | Timeout per backend monitor probe. |
 | `spec.monitor.failureThreshold` | No | `3` | count | Consecutive failures before treating a healthy backend as unhealthy. |
 | `spec.monitor.recoveryThreshold` | No | `2` | count | Consecutive successes before treating an unhealthy backend as healthy. |
-| `spec.monitor.maxConcurrency` | No | `4` | concurrent probes | Maximum number of backend monitor probes running at once. |
-| `spec.monitor.directDBProbe` | No | `true` | boolean | If true, connect directly to the Aurora instance and check role/health via `pg_is_in_recovery()` and `transaction_read_only`. |
-| `spec.monitor.pgbouncerPathProbe` | No | `true` | boolean | If true, run `select 1` via the per-instance PgBouncer Service with `sslmode=disable`. |
-| `spec.monitor.directDBSSLMode` | No | discovery Secret `sslmode` | PostgreSQL SSL mode | SSL mode used only for the direct Aurora instance probe. |
 
-The two probes work as follows. If both are turned off (`false`), the backend is treated as unhealthy with the reason `no monitor probes enabled`.
+Monitor uses Pod readiness and an always-on direct DB probe.
 
-- **Direct DB probe** — connects directly to the Aurora instance to check health/role. The connection DB is `spec.discovery.database` (default `postgres`), and the SSL mode follows the discovery Secret's `sslmode`.
-- **PgBouncer path probe** — checks that it can reach the backend through PgBouncer.
-  - The operator automatically injects a dedicated alias `pgbouncer_aurora_probe` into `[databases]`, and the probe connects via this alias. It is not affected by the user-defined `[databases]` `*`, other DB aliases, or `user` settings.
-  - This alias is injected only when `pgbouncerPathProbe` is enabled, and it actually connects to `spec.discovery.database` (default `postgres`).
-  - Since PgBouncer usually listens without TLS inside the cluster, this probe always connects with `sslmode=disable`.
+- **Direct DB probe** — connects directly to the Aurora instance to check health/role. The connection DB is `spec.discovery.database` (default `postgres`), and the SSL mode follows `spec.discovery.sslMode`.
+  - For `sslmode=verify-full`, the operator Pod must trust the Aurora CA. With the pgx driver this can be done by mounting the CA bundle into the operator Pod and setting `PGSSLROOTCERT` to that file path.
 
-To enable `pgbouncerPathProbe`, the user in `spec.discovery.authSecretRef` must (1) also exist in the PgBouncer `userlist.txt` Secret and (2) be able to run the probe query on the backend DB. Because `auth_file` is a single file, the operator does not automatically merge the user's `userlist.txt` with the discovery Secret.
+TLS from PgBouncer to Aurora can be configured through PgBouncer settings such as `server_tls_sslmode` and `server_tls_ca_file`, with the CA file mounted through `spec.pgbouncer.volumes` and `volumeMounts`. Client-to-PgBouncer TLS is not managed by this alpha API; terminate it outside the operator or provide the required PgBouncer files through custom volumes if you choose to manage it yourself.
 
 #### `spec.pgbouncer`
 
@@ -371,12 +365,16 @@ To enable `pgbouncerPathProbe`, the user in `spec.discovery.authSecretRef` must 
 | `spec.pgbouncer.imagePullSecrets` | No | `[]` | Kubernetes `LocalObjectReference[]` | Image pull secrets added to the PgBouncer Pod. |
 | `spec.pgbouncer.topologySpreadConstraints` | No | `[]` | Kubernetes `TopologySpreadConstraint[]` | Native Pod topology spread. Use this instead of an operator-specific policy for replica spreading. |
 
+The operator intentionally does not expose every Deployment field. Deployment
+strategy, init containers, lifecycle hooks, and arbitrary main-container command
+or probe wiring beyond the fields above are not part of the v1alpha1 API.
+
 `spec.pgbouncer.config` maps directly to PgBouncer ini sections:
 
 | Option | Required | Default | Description |
 |---|---:|---|---|
 | `spec.pgbouncer.config.pgbouncer` | No | `{auth_type: md5, auth_file: /etc/pgbouncer/userlist.txt, listen_addr: 0.0.0.0, listen_port: 6432}` | Rendered as `[pgbouncer]`. `listen_port` is the source of truth for the container port, Services, and probes. `listen_addr`, `auth_file`, and `pidfile` can also be set here. |
-| `spec.pgbouncer.config.databases` | No | `{"*": {}}` | Rendered as `[databases]`. Each key is a database entry name. `host`/`port` are operator-managed per Aurora instance and ignored if provided. `pgbouncer_aurora_probe` is a monitor reserved alias, so when the path probe is enabled it overrides any user setting with the operator value. |
+| `spec.pgbouncer.config.databases` | No | `{"*": {}}` | Rendered as `[databases]`. Each key is a database entry name. `host`/`port` are operator-managed per Aurora instance and ignored if provided. |
 | `spec.pgbouncer.config.users` | No | `{}` | Rendered as `[users]`. |
 | `spec.pgbouncer.config.peers` | No | `{}` | Rendered as `[peers]`. |
 
@@ -390,7 +388,6 @@ Operator-managed PgBouncer keys:
 | `[pgbouncer].pidfile` | `spec.pgbouncer.config.pgbouncer.pidfile` | Optional PgBouncer key rendered only when set. |
 | `[databases].*.host` | Aurora instance endpoint | Rendered by the operator, not overridable. |
 | `[databases].*.port` | Aurora instance port | Rendered by the operator, not overridable. |
-| `[databases].pgbouncer_aurora_probe` | `host=<instance endpoint> port=<instance port> dbname=<spec.discovery.database or postgres>` | Reserved alias for the monitor path probe. `host`/`port` are operator-managed just like the per-instance route; rendered by the operator when `pgbouncerPathProbe` is effectively true, not overridable. |
 
 The operator does not validate arbitrary PgBouncer config keys.
 Except for the operator-managed keys above and parsing `listen_port` for the Kubernetes Service/container/probe ports, every provided `key: value` is rendered as-is into `pgbouncer.ini`.
@@ -417,7 +414,7 @@ Invalid PgBouncer config is expected to fail at PgBouncer startup, not at CR adm
 | `spec.services.perInstances.type` | No | `ClusterIP` | Kubernetes Service type | Type of every per-instance PgBouncer Service. One of `ClusterIP`/`NodePort`/`LoadBalancer`. |
 | `spec.services.perInstances.annotations` | No | `{}` | map[string]string | Annotations for each per-instance Service. |
 
-Because the monitor path probe and direct targeting depend on per-instance Services, a per-instance Service is always created for discovered instances.
+Because direct per-instance targeting depends on per-instance Services, a per-instance Service is always created for discovered instances.
 
 #### `spec.topologyPolicy`
 
@@ -425,7 +422,7 @@ Because the monitor path probe and direct targeting depend on per-instance Servi
 |---|---:|---|---|---|
 | `spec.topologyPolicy.removeAfterMissingCount` | No | `3` | discovery observations | Number of consecutive trusted discovery cycles an instance must be missing before becoming a removal candidate from retained membership. |
 | `spec.topologyPolicy.removedInstanceRetention` | No | `1h` | Go duration | How long to retain a removed instance's ConfigMap/Deployment/Service before deletion. |
-| `spec.topologyPolicy.writerChangeConnectionHandling` | No | `KeepExisting` | enum | Behavior on Writer membership change. One of `KeepExisting`/`RestartWriters`/`RestartAll`. |
+| `spec.topologyPolicy.writerChangeConnectionHandling` | No | `RestartWriters` | enum | Behavior on Writer membership change. One of `KeepExisting`/`RestartWriters`/`RestartAll`. `RestartWriters` is recommended for production failover handling. |
 | `spec.topologyPolicy.readerEmptyFallback.enabled` | No | `true` | boolean | Whether to temporarily route Reader Service traffic to the Writer when there is no healthy Reader. If off, leave the Reader membership empty. |
 | `spec.topologyPolicy.zoneAware.enabled` | No | `true` | boolean | Whether to add node affinity based on the Aurora instance AZ. |
 | `spec.topologyPolicy.zoneAware.enforcement` | No | `Preferred` | enum | `Preferred` adds preferred node affinity, `Required` adds required node affinity. |
@@ -434,13 +431,12 @@ Because the monitor path probe and direct targeting depend on per-instance Servi
 
 ### Secret
 
-The operator DB auth Secret referenced by `spec.discovery.authSecretRef` uses the keys below. The same credentials are used for Aurora discovery, the direct DB monitor probe, and the PgBouncer path probe.
+The operator DB auth Secret referenced by `spec.discovery.authSecretRef` uses the keys below. The same credentials are used for Aurora discovery and the direct DB monitor probe.
 
 | Key | Required | Default | Unit | Description |
 |---|---:|---|---|---|
 | `username` or `user` | Yes | none | string | PostgreSQL user used for discovery and monitor probe queries. |
 | `password` | Yes | none | string | PostgreSQL password. |
-| `sslmode` or `ssl_mode` | No | `require` | string | PostgreSQL SSL mode used by the Go `pgx` driver. |
 
 The PgBouncer auth file Secret referenced by `spec.pgbouncer.authFileSecretRef`:
 

@@ -222,6 +222,28 @@ func TestPlanDropsMissingWriterAtRemoveThreshold(t *testing.T) {
 	}
 }
 
+func TestPlanPreservesMissingWriterWhenNoWriterObserved(t *testing.T) {
+	resource := &v1alpha1.PgBouncerAurora{}
+	resource.Spec.Monitor.RecoveryThreshold = 1
+	resource.Spec.TopologyPolicy.RemoveAfterMissingCount = 3
+	resource.Status.LastAppliedMembership.Writer = []string{"db-old"}
+
+	out := Plan(Input{
+		Resource:         resource,
+		DiscoveryTrusted: true,
+		Discovered:       []domain.InstanceObservation{{Name: "db-reader", Role: domain.RoleReader}},
+		Health:           map[string]domain.HealthStatus{"db-reader": {Healthy: true}},
+		MissingInstances: []v1alpha1.MissingInstanceStatus{{
+			InstanceName: "db-old",
+			MissingCount: 1,
+		}},
+	})
+
+	if len(out.Membership.Writer) != 1 || out.Membership.Writer[0] != "db-old" {
+		t.Fatalf("missing writer should be preserved when no writer is observed: %#v", out.Membership.Writer)
+	}
+}
+
 func TestPlanPreservesPreviousWriterWhenWriterAmbiguous(t *testing.T) {
 	resource := &v1alpha1.PgBouncerAurora{}
 	resource.Spec.Monitor.RecoveryThreshold = 1

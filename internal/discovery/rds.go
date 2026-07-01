@@ -288,6 +288,9 @@ func metadataFromDBInstance(instance types.DBInstance) (InstanceMetadata, bool) 
 	if instance.DbiResourceId != nil {
 		meta.DbiResourceId = *instance.DbiResourceId
 	}
+	if instance.DBInstanceStatus != nil {
+		meta.Status = *instance.DBInstanceStatus
+	}
 	return meta, true
 }
 

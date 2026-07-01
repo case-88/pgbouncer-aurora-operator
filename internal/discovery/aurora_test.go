@@ -186,6 +186,7 @@ func TestBuildResultIgnoresCreatingStatus(t *testing.T) {
 		InstanceName:     "db-3",
 		AvailabilityZone: "ap-northeast-2a",
 		DbiResourceId:    "dbi-db-3",
+		Status:           "creating",
 	}
 
 	result := BuildResult(resource, rows, metadata)
@@ -197,20 +198,26 @@ func TestBuildResultIgnoresCreatingStatus(t *testing.T) {
 	}
 }
 
-func TestBuildResultIgnoresDeletingStatusForSQLDiscoveredInstance(t *testing.T) {
+func TestBuildResultExcludesDeletingReaderFromSQLDiscoveredInstances(t *testing.T) {
 	resource := sampleResource()
 	resource.Status.LastKnownTopology.Instances = []v1alpha1.InstanceTopologyStatus{
 		{InstanceName: "db-1", Endpoint: "db-1.example", Role: domain.RoleWriter},
 		{InstanceName: "db-2", Endpoint: "db-2.example", Role: domain.RoleReader},
 	}
 	metadata := sampleMetadata()
+	meta := metadata["db-2"]
+	meta.Status = "deleting"
+	metadata["db-2"] = meta
 
 	result := BuildResult(resource, sampleRows(), metadata)
 	if !result.Trusted {
 		t.Fatalf("metadata must not make discovery untrusted: %#v", result)
 	}
-	if len(result.Instances) != 2 {
-		t.Fatalf("SQL-discovered reader must remain in topology: %#v", result.Instances)
+	if len(result.Instances) != 1 || result.Instances[0].Name != "db-1" {
+		t.Fatalf("deleting SQL-discovered reader must be excluded from topology: %#v", result.Instances)
+	}
+	if len(result.RemovingInstances) != 1 || result.RemovingInstances[0] != "db-2" {
+		t.Fatalf("removing instances mismatch: %#v", result.RemovingInstances)
 	}
 }
 
@@ -292,6 +299,32 @@ func TestProviderResolvesUniqueSortedMetadata(t *testing.T) {
 	if !reflect.DeepEqual(resolver.seen, []string{"db-1", "db-2"}) {
 		t.Fatalf("resolved names = %#v", resolver.seen)
 	}
+}
+
+func TestProviderResolvesMetadataWhenZoneAwareDisabled(t *testing.T) {
+	resource := sampleResource()
+	resource.Spec.TopologyPolicy.ZoneAware.Enabled = boolPtr(false)
+	metadata := sampleMetadata()
+	meta := metadata["db-2"]
+	meta.Status = "deleting"
+	metadata["db-2"] = meta
+	resolver := &fakeMetadataResolver{metadata: metadata}
+	provider := Provider{Rows: fakeRowsSource{rows: sampleRows()}, Metadata: resolver}
+
+	result, err := provider.Discover(context.Background(), resource)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Trusted {
+		t.Fatalf("result = %#v", result)
+	}
+	if !reflect.DeepEqual(resolver.seen, []string{"db-1", "db-2"}) {
+		t.Fatalf("resolved names = %#v", resolver.seen)
+	}
+	if len(result.RemovingInstances) != 1 || result.RemovingInstances[0] != "db-2" {
+		t.Fatalf("metadata status should be used without zoneAware: %#v", result.RemovingInstances)
+	}
+	assertObservation(t, result.Instances, "db-1", domain.RoleWriter, "db-1.example", 5432, "ap-northeast-2a")
 }
 
 func TestProviderUsesDiscoveryTimeoutForMetadataResolve(t *testing.T) {

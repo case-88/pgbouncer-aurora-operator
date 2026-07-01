@@ -29,6 +29,7 @@ type InstanceMetadata struct {
 	InstanceName     string
 	AvailabilityZone string
 	DbiResourceId    string
+	Status           string
 }
 
 type RowSource interface {
@@ -60,7 +61,7 @@ func (p Provider) Discover(ctx context.Context, resource *v1alpha1.PgBouncerAuro
 	}
 	metadata := map[string]InstanceMetadata{}
 	metadataErr := ""
-	if p.Metadata != nil && len(instanceNames) > 0 && zoneAwareEnabled(resource) {
+	if p.Metadata != nil && len(instanceNames) > 0 {
 		metadataCtx, cancel := context.WithTimeout(ctx, metadataTimeout(resource))
 		defer cancel()
 		metadata, err = p.Metadata.Resolve(metadataCtx, resource, uniqueSorted(instanceNames))
@@ -90,6 +91,7 @@ func BuildResult(resource *v1alpha1.PgBouncerAurora, rows []AuroraReplicaStatusR
 	previous := previousTopology(resource)
 	seen := map[string]struct{}{}
 	instances := make([]domain.InstanceObservation, 0, len(rows))
+	removing := map[string]struct{}{}
 	writerCount := 0
 	for _, row := range rows {
 		name := strings.TrimSpace(row.ServerID)
@@ -101,6 +103,11 @@ func BuildResult(resource *v1alpha1.PgBouncerAurora, rows []AuroraReplicaStatusR
 		}
 		seen[name] = struct{}{}
 
+		meta := metadata[name]
+		if metadataDeleting(meta) {
+			removing[name] = struct{}{}
+			continue
+		}
 		role := RoleFromSessionID(row.SessionID)
 		if role == domain.RoleWriter {
 			writerCount++
@@ -109,8 +116,8 @@ func BuildResult(resource *v1alpha1.PgBouncerAurora, rows []AuroraReplicaStatusR
 		if endpoint == "" {
 			return untrusted(fmt.Sprintf("endpoint missing for instance %q", name))
 		}
-		zone := availabilityZoneForInstance(name, metadata[name], previous)
-		dbiResourceId := dbiResourceIdForInstance(name, metadata[name], previous)
+		zone := availabilityZoneForInstance(name, meta, previous)
+		dbiResourceId := dbiResourceIdForInstance(name, meta, previous)
 		port := portForInstance(resource, name, previous)
 		if port == 0 {
 			port = 5432
@@ -131,7 +138,7 @@ func BuildResult(resource *v1alpha1.PgBouncerAurora, rows []AuroraReplicaStatusR
 		return untrusted("no usable instances discovered")
 	}
 	sort.Slice(instances, func(i, j int) bool { return instances[i].Name < instances[j].Name })
-	return domain.DiscoveryResult{Trusted: true, Instances: instances, Reason: "aurora discovery succeeded"}
+	return domain.DiscoveryResult{Trusted: true, Instances: instances, RemovingInstances: sortedSet(removing), Reason: "aurora discovery succeeded"}
 }
 
 func RoleFromSessionID(sessionID string) domain.Role {
@@ -189,6 +196,10 @@ func dbiResourceIdForInstance(name string, meta InstanceMetadata, previous map[s
 	return ""
 }
 
+func metadataDeleting(meta InstanceMetadata) bool {
+	return strings.EqualFold(strings.TrimSpace(meta.Status), "deleting")
+}
+
 func portForInstance(resource *v1alpha1.PgBouncerAurora, name string, previous map[string]v1alpha1.InstanceTopologyStatus) int32 {
 	if resource != nil && resource.Spec.Discovery.Port > 0 {
 		return resource.Spec.Discovery.Port
@@ -215,6 +226,18 @@ func uniqueSorted(values []string) []string {
 	}
 	out := make([]string, 0, len(set))
 	for value := range set {
+		out = append(out, value)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func sortedSet(values map[string]struct{}) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(values))
+	for value := range values {
 		out = append(out, value)
 	}
 	sort.Strings(out)
