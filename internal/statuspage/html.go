@@ -508,7 +508,7 @@ const statusHTML = `<!doctype html>
         <div class="subhead" id="subhead">Loading status...</div>
       </div>
       <div class="toolbar" aria-label="overall status">
-        <select id="recentWindowSelect" aria-label="recent window"></select>
+        <select id="recentWindowSelect" aria-label="local highlight window" title="Highlight window for this browser only"></select>
         <select id="refreshSelect" aria-label="refresh interval"></select>
         <button class="button" id="refreshButton" type="button">Refresh</button>
         <button class="button" id="themeButton" type="button">Theme</button>
@@ -722,7 +722,7 @@ const statusHTML = `<!doctype html>
       var select = document.getElementById("recentWindowSelect");
       var current = effectiveRecentWindowSeconds();
       select.innerHTML = values.map(function(value) {
-        return '<option value="' + value + '">Recent ' + formatDuration(value) + '</option>';
+        return '<option value="' + value + '">Highlights ' + formatDuration(value) + '~</option>';
       }).join("");
       if (values.indexOf(current) < 0) current = 60;
       recentWindowSeconds = current;
@@ -777,7 +777,7 @@ const statusHTML = `<!doctype html>
       var summary = snapshot.summary || {};
       var generatedAt = formatTime(snapshot.generatedAt) + tzLabel(snapshot.generatedAt);
       document.getElementById("subhead").textContent =
-        snapshot.namespace + " / generated " + generatedAt + " / min refresh " + snapshot.refreshMinIntervalSeconds + "s / recent window " + formatDuration(effectiveRecentWindowSeconds());
+        snapshot.namespace + " / generated " + generatedAt + " / min refresh " + snapshot.refreshMinIntervalSeconds + "s / local highlights " + formatDuration(effectiveRecentWindowSeconds());
       document.getElementById("watchName").textContent = "watch " + (snapshot.watchName || "*");
       var items = [
         ["Clusters", summary.clusters || 0, "managed CRs", recentMetricCount("clusters")],
