@@ -96,12 +96,13 @@ spec:
       peers: {}
 
     # Per Aurora instance override. name must match server_id from
-    # aurora_replica_status(). config is deep-merged over the common config.
-    # Set enabled:false to intentionally exclude a discovered instance from
-    # PgBouncer resources, monitor probes, and Writer/Reader Service membership.
+    # aurora_replica_status().
+    # enabled defaults to true when omitted. Set enabled:false to intentionally
+    # exclude a discovered instance from PgBouncer resources, monitor probes,
+    # and Writer/Reader Service membership.
+    # config is deep-merged over the common config when the instance is enabled.
     instanceOverrides:
       - name: example-pg-instance-1
-        enabled: true
         replicas: 2
         config:
           pgbouncer:
@@ -109,6 +110,9 @@ spec:
           databases:
             "*":
               pool_size: "100"
+
+      - name: example-pg-instance-2
+        enabled: false
 
     # Secret containing userlist.txt.
     authFileSecretRef:

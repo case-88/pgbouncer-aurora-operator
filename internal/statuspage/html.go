@@ -562,10 +562,10 @@ const statusHTML = `<!doctype html>
     }
 
     function conditionClass(condition) {
-      var negativeIsGood = ["Frozen", "ReaderFallback", "RoleMismatch", "TrafficTransitioning", "ZoneAwareConflict", "Degraded"];
+      var negativeIsGood = ["Frozen", "ReaderFallback", "ReaderFallbackSuppressed", "RoleMismatch", "TrafficTransitioning", "ZoneAwareConflict", "Degraded"];
       if (condition.status === "Unknown") return "warn";
       if (negativeIsGood.indexOf(condition.type) >= 0) {
-        return condition.status === "True" ? (condition.type === "ReaderFallback" ? "warn" : "error") : "ok";
+        return condition.status === "True" ? ((condition.type === "ReaderFallback" || condition.type === "ReaderFallbackSuppressed") ? "warn" : "error") : "ok";
       }
       return condition.status === "True" ? "ok" : "error";
     }

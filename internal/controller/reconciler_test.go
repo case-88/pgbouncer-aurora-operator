@@ -1948,8 +1948,12 @@ func TestReconcileExcludesDisabledInstanceOverride(t *testing.T) {
 	if err := client.Get(ctx, types.NamespacedName{Name: resource.Name, Namespace: resource.Namespace}, updated); err != nil {
 		t.Fatalf("get status failed: %v", err)
 	}
-	if len(updated.Status.LastAppliedMembership.Reader) != 1 || updated.Status.LastAppliedMembership.Reader[0] != "db-1" {
-		t.Fatalf("reader should fallback to enabled writer: %#v", updated.Status.LastAppliedMembership.Reader)
+	if len(updated.Status.LastAppliedMembership.Reader) != 0 {
+		t.Fatalf("reader membership should stay empty when all discovered readers are disabled: %#v", updated.Status.LastAppliedMembership.Reader)
+	}
+	if !hasCondition(updated.Status.Conditions, "ReaderFallbackSuppressed", metav1.ConditionTrue) ||
+		conditionReason(updated.Status.Conditions, "ReaderFallbackSuppressed") != "AllDiscoveredReadersDisabledByOverride" {
+		t.Fatalf("ReaderFallbackSuppressed condition mismatch: %#v", updated.Status.Conditions)
 	}
 	foundDisabled := false
 	for _, instance := range updated.Status.Instances {
@@ -2792,4 +2796,47 @@ func TestApplyZoneAwareConflictPolicyFailFreezesPlan(t *testing.T) {
 	if len(plan.Reasons) == 0 || !strings.Contains(plan.Reasons[0], "zoneAware conflict") {
 		t.Fatalf("plan reason should describe zoneAware conflict: %#v", plan.Reasons)
 	}
+}
+
+func TestConditionsReportReaderFallbackSuppressed(t *testing.T) {
+	plan := planner.Output{
+		Instances: []domain.InstancePlan{
+			{
+				InstanceObservation: domain.InstanceObservation{Name: "db-1", Role: v1alpha1.RoleWriter},
+				Healthy:             true,
+				ReadyReplicas:       1,
+			},
+			{
+				InstanceObservation: domain.InstanceObservation{Name: "db-2", Role: v1alpha1.RoleReader},
+				Disabled:            true,
+			},
+		},
+		Membership: domain.ServiceMembership{
+			Writer: []string{"db-1"},
+		},
+		ReaderFallbackSuppressed:       true,
+		ReaderFallbackSuppressedReason: "AllDiscoveredReadersDisabledByOverride",
+	}
+
+	conditions := conditionsFor(sampleResource(), nil, domain.DiscoveryResult{Trusted: true}, plan, "", metav1.Now())
+	if conditionReason(conditions, "ReaderFallback") != "SuppressedByDisabledReaders" {
+		t.Fatalf("ReaderFallback reason mismatch: %#v", conditions)
+	}
+	if !hasCondition(conditions, "ReaderFallbackSuppressed", metav1.ConditionTrue) ||
+		conditionReason(conditions, "ReaderFallbackSuppressed") != "AllDiscoveredReadersDisabledByOverride" {
+		t.Fatalf("ReaderFallbackSuppressed condition mismatch: %#v", conditions)
+	}
+	if !hasCondition(conditions, "ReaderReady", metav1.ConditionFalse) ||
+		conditionReason(conditions, "ReaderReady") != "ReaderMembersDisabledByOverride" {
+		t.Fatalf("ReaderReady condition mismatch: %#v", conditions)
+	}
+}
+
+func conditionReason(conditions []metav1.Condition, conditionType string) string {
+	for _, condition := range conditions {
+		if condition.Type == conditionType {
+			return condition.Reason
+		}
+	}
+	return ""
 }
