@@ -2217,6 +2217,14 @@ func conditionsFor(resource *v1alpha1.PgBouncerAurora, previous []metav1.Conditi
 	if readerFallbackFromWriter(plan) {
 		fallbackStatus = metav1.ConditionTrue
 		fallbackReason = "FallbackFromWriter"
+	} else if plan.ReaderFallbackSuppressed {
+		fallbackReason = "SuppressedByDisabledReaders"
+	}
+	fallbackSuppressedStatus := metav1.ConditionFalse
+	fallbackSuppressedReason := "NotSuppressed"
+	if plan.ReaderFallbackSuppressed {
+		fallbackSuppressedStatus = metav1.ConditionTrue
+		fallbackSuppressedReason = plan.ReaderFallbackSuppressedReason
 	}
 	roleMismatchStatus := metav1.ConditionFalse
 	roleMismatchReason := "NoRoleMismatch"
@@ -2248,6 +2256,7 @@ func conditionsFor(resource *v1alpha1.PgBouncerAurora, previous []metav1.Conditi
 		conditionWithTransition(previous, "WriterReady", writerReadyStatus, writerReadyReason, writerReadyMessage, now),
 		conditionWithTransition(previous, "ReaderReady", readerReadyStatus, readerReadyReason, readerReadyMessage, now),
 		conditionWithTransition(previous, "ReaderFallback", fallbackStatus, fallbackReason, "", now),
+		conditionWithTransition(previous, "ReaderFallbackSuppressed", fallbackSuppressedStatus, fallbackSuppressedReason, "", now),
 		conditionWithTransition(previous, "RoleMismatch", roleMismatchStatus, roleMismatchReason, roleMismatchMessage, now),
 		conditionWithTransition(previous, "TrafficTransitioning", trafficTransitionStatus, trafficTransitionReason, trafficTransitionMessage, now),
 		conditionWithTransition(previous, "ZoneAwareConflict", zoneAwareConflictStatus, zoneAwareConflictReason, zoneAwareConflictMessage, now),
@@ -2458,6 +2467,9 @@ func roleReadyCondition(resource *v1alpha1.PgBouncerAurora, plan planner.Output,
 		roleName = "Reader"
 	}
 	if len(members) == 0 {
+		if role == v1alpha1.RoleReader && plan.ReaderFallbackSuppressed {
+			return metav1.ConditionFalse, "ReaderMembersDisabledByOverride", plan.ReaderFallbackSuppressedReason
+		}
 		return metav1.ConditionFalse, fmt.Sprintf("No%sMembers", roleName), ""
 	}
 	activeInstances := activePlanInstances(plan.Instances)

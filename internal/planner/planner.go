@@ -22,6 +22,9 @@ type Output struct {
 	Membership domain.ServiceMembership
 	Frozen     bool
 	Reasons    []string
+
+	ReaderFallbackSuppressed       bool
+	ReaderFallbackSuppressedReason string
 }
 
 func Plan(input Input) Output {
@@ -43,6 +46,9 @@ func Plan(input Input) Output {
 	}
 
 	previous := previousInstanceStatus(input.Resource.Status.Instances)
+	discoveredReaderCount := 0
+	disabledDiscoveredReaderCount := 0
+	enabledDiscoveredReaderCount := 0
 	for _, observed := range input.Discovered {
 		previousStatus, hadPrevious := previous[observed.Name]
 		if physicalIdentityChanged(observed.DbiResourceId, previousStatus.DbiResourceId) {
@@ -56,11 +62,19 @@ func Plan(input Input) Output {
 			Replicas:            replicasFor(input.Resource.Spec.PgBouncer, observed.Name),
 		}
 		if instanceDisabled(input.Resource.Spec.PgBouncer, observed.Name) {
+			if observed.Role == domain.RoleReader {
+				discoveredReaderCount++
+				disabledDiscoveredReaderCount++
+			}
 			plan.Disabled = true
 			plan.Replicas = 0
 			plan.Reason = "disabled by spec.pgbouncer.instanceOverrides"
 			out.Instances = append(out.Instances, plan)
 			continue
+		}
+		if observed.Role == domain.RoleReader {
+			discoveredReaderCount++
+			enabledDiscoveredReaderCount++
 		}
 		if input.CachedHealth {
 			plan = applyCachedHealth(plan, previousStatus)
@@ -90,6 +104,11 @@ func Plan(input Input) Output {
 	sortInstancePlans(out.Instances)
 	sort.Strings(out.Membership.Writer)
 	sort.Strings(out.Membership.Reader)
+
+	if discoveredReaderCount > 0 && enabledDiscoveredReaderCount == 0 && disabledDiscoveredReaderCount == discoveredReaderCount {
+		out.ReaderFallbackSuppressed = true
+		out.ReaderFallbackSuppressedReason = "AllDiscoveredReadersDisabledByOverride"
+	}
 
 	stabilizeWriterMembership(input.Resource, &out, input.MissingInstances)
 	preserveMissingReaderMembership(input.Resource, &out, input.MissingInstances)
@@ -200,11 +219,15 @@ func stabilizeWriterMembership(resource *v1alpha1.PgBouncerAurora, out *Output, 
 }
 
 func previousMissingWriterBeforeRemoveThreshold(resource *v1alpha1.PgBouncerAurora, missingInstances []v1alpha1.MissingInstanceStatus) []string {
-	return previousMissingMembershipBeforeRemoveThreshold(resource.Status.LastAppliedMembership.Writer, missingInstances, defaultInt32(resource.Spec.TopologyPolicy.RemoveAfterMissingCount, 3))
+	return filterEnabledInstances(resource.Spec.PgBouncer, previousMissingMembershipBeforeRemoveThreshold(resource.Status.LastAppliedMembership.Writer, missingInstances, defaultInt32(resource.Spec.TopologyPolicy.RemoveAfterMissingCount, 3)))
 }
 
 func stabilizeReaderMembership(resource *v1alpha1.PgBouncerAurora, out *Output, missingInstances []v1alpha1.MissingInstanceStatus) {
 	if len(out.Membership.Reader) > 0 {
+		return
+	}
+	if out.ReaderFallbackSuppressed {
+		out.Reasons = append(out.Reasons, "reader fallback suppressed: "+out.ReaderFallbackSuppressedReason)
 		return
 	}
 	if readerEmptyFallbackEnabled(resource) && len(out.Membership.Writer) > 0 {
@@ -224,7 +247,7 @@ func readerEmptyFallbackEnabled(resource *v1alpha1.PgBouncerAurora) bool {
 }
 
 func previousMissingReaderBeforeRemoveThreshold(resource *v1alpha1.PgBouncerAurora, missingInstances []v1alpha1.MissingInstanceStatus) []string {
-	return previousMissingMembershipBeforeRemoveThreshold(resource.Status.LastAppliedMembership.Reader, missingInstances, defaultInt32(resource.Spec.TopologyPolicy.RemoveAfterMissingCount, 3))
+	return filterEnabledInstances(resource.Spec.PgBouncer, previousMissingMembershipBeforeRemoveThreshold(resource.Status.LastAppliedMembership.Reader, missingInstances, defaultInt32(resource.Spec.TopologyPolicy.RemoveAfterMissingCount, 3)))
 }
 
 func previousMissingMembershipBeforeRemoveThreshold(previous []string, missingInstances []v1alpha1.MissingInstanceStatus, threshold int32) []string {
@@ -274,7 +297,7 @@ func preserveMissingReaderMembership(resource *v1alpha1.PgBouncerAurora, out *Ou
 	currentReader := stringSet(out.Membership.Reader)
 	threshold := defaultInt32(resource.Spec.TopologyPolicy.RemoveAfterMissingCount, 3)
 	for _, missing := range missingInstances {
-		if missing.InstanceName == "" || missing.MissingCount >= threshold || !previousReader[missing.InstanceName] || currentReader[missing.InstanceName] {
+		if missing.InstanceName == "" || missing.MissingCount >= threshold || !previousReader[missing.InstanceName] || currentReader[missing.InstanceName] || instanceDisabled(resource.Spec.PgBouncer, missing.InstanceName) {
 			continue
 		}
 		out.Membership.Reader = append(out.Membership.Reader, missing.InstanceName)
@@ -311,6 +334,22 @@ func instanceDisabled(spec v1alpha1.PgBouncerSpec, instanceName string) bool {
 		}
 	}
 	return false
+}
+
+func filterEnabledInstances(spec v1alpha1.PgBouncerSpec, values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		if !instanceDisabled(spec, value) {
+			out = append(out, value)
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 func defaultInt32(value int32, fallback int32) int32 {

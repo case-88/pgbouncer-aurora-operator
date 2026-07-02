@@ -138,11 +138,43 @@ func TestPlanDisabledInstanceOverrideExcludesMembership(t *testing.T) {
 	if len(out.Membership.Writer) != 1 || out.Membership.Writer[0] != "db-1" {
 		t.Fatalf("writer membership = %#v", out.Membership.Writer)
 	}
-	if len(out.Membership.Reader) != 1 || out.Membership.Reader[0] != "db-1" {
-		t.Fatalf("reader should fallback to enabled writer, not disabled reader: %#v", out.Membership.Reader)
+	if len(out.Membership.Reader) != 0 {
+		t.Fatalf("reader membership should stay empty when all discovered readers are disabled: %#v", out.Membership.Reader)
+	}
+	if !out.ReaderFallbackSuppressed || out.ReaderFallbackSuppressedReason != "AllDiscoveredReadersDisabledByOverride" {
+		t.Fatalf("reader fallback suppression mismatch: %#v", out)
 	}
 	if !out.Instances[1].Disabled || out.Instances[1].Replicas != 0 || out.Instances[1].Reason != "disabled by spec.pgbouncer.instanceOverrides" {
 		t.Fatalf("disabled instance status mismatch: %#v", out.Instances[1])
+	}
+}
+
+func TestPlanPartialDisabledReaderUsesEnabledReader(t *testing.T) {
+	disabled := false
+	resource := &v1alpha1.PgBouncerAurora{}
+	resource.Spec.Monitor.RecoveryThreshold = 1
+	resource.Spec.PgBouncer.InstanceOverrides = []v1alpha1.InstanceOverrideSpec{{Name: "db-3", Enabled: &disabled}}
+
+	out := Plan(Input{
+		Resource:         resource,
+		DiscoveryTrusted: true,
+		Discovered: []domain.InstanceObservation{
+			{Name: "db-1", Role: domain.RoleWriter},
+			{Name: "db-2", Role: domain.RoleReader},
+			{Name: "db-3", Role: domain.RoleReader},
+		},
+		Health: map[string]domain.HealthStatus{
+			"db-1": {Healthy: true},
+			"db-2": {Healthy: true},
+			"db-3": {Healthy: true},
+		},
+	})
+
+	if len(out.Membership.Reader) != 1 || out.Membership.Reader[0] != "db-2" {
+		t.Fatalf("reader membership should use enabled reader only: %#v", out.Membership.Reader)
+	}
+	if out.ReaderFallbackSuppressed {
+		t.Fatalf("reader fallback should not be suppressed when an enabled reader exists: %#v", out)
 	}
 }
 
